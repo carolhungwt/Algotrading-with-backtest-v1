@@ -71,7 +71,14 @@ class DataHandler:
         # Make a copy to avoid modifying the original dataframe
         df = data.copy()
         
-        # Rename columns to standard format
+        # Check if we have MultiIndex columns (tuples)
+        if isinstance(df.columns, pd.MultiIndex):
+            # For MultiIndex columns, we need to handle them differently
+            # Typically, the first level is the data type and the second is the column name
+            # We'll flatten these to a single level
+            df.columns = [col[0] if len(col) == 1 else col[1] for col in df.columns]
+        
+        # Now we can safely capitalize column names
         df.columns = [col.capitalize() for col in df.columns]
         
         # Ensure the dataframe has the required columns
