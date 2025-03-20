@@ -60,7 +60,7 @@ class DataHandler:
     
     def _process_data(self, data):
         """
-        Process the raw data from Yahoo Finance.
+        Process the raw data from Yahoo Finance using the stack approach.
         
         Args:
             data (pandas.DataFrame): Raw stock data
@@ -68,32 +68,69 @@ class DataHandler:
         Returns:
             pandas.DataFrame: Processed stock data
         """
-        # Make a copy to avoid modifying the original dataframe
-        df = data.copy()
-        
-        # Check if we have MultiIndex columns (tuples)
-        if isinstance(df.columns, pd.MultiIndex):
-            # For MultiIndex columns, we need to handle them differently
-            # Typically, the first level is the data type and the second is the column name
-            # We'll flatten these to a single level
-            df.columns = [col[0] if len(col) == 1 else col[1] for col in df.columns]
-        
-        # Now we can safely capitalize column names
-        df.columns = [col.capitalize() for col in df.columns]
-        
-        # Ensure the dataframe has the required columns
-        required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-        for col in required_columns:
-            if col not in df.columns:
-                self.logger.warning(f"Missing column {col} in data")
-        
-        # Drop rows with NaN values
-        df = df.dropna(subset=['Close'])
-        
-        # Add additional columns that might be useful for strategies
-        df['Returns'] = df['Close'].pct_change()
-        
-        return df
+        try:
+            # Make a copy to avoid modifying the original dataframe
+            df = data.copy()
+            
+            # Check if we're dealing with a MultiIndex dataframe
+            if isinstance(df.columns, pd.MultiIndex):
+                # Use the stack approach to reshape the data
+                stacked = df.stack(level=0).reset_index()
+                
+                # Rename columns appropriately
+                stacked.columns = ['Date', 'Symbol', 'Value']
+                
+                # Pivot the data back into the format we need
+                df = stacked.pivot(index='Date', columns='Symbol')
+                
+                # Flatten the MultiIndex columns
+                df.columns = df.columns.get_level_values(1)
+            
+            # Standardize column names (capitalize first letter)
+            df.columns = [col.capitalize() for col in df.columns]
+            
+            # Standard columns we expect in OHLCV data
+            standard_columns = {
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'volume': 'Volume',
+                'adj close': 'Close',
+                'adj. close': 'Close',
+                'adjusted close': 'Close'
+            }
+            
+            # Create a mapping for column renaming
+            rename_map = {}
+            for col in df.columns:
+                lower_col = col.lower()
+                if lower_col in standard_columns:
+                    rename_map[col] = standard_columns[lower_col]
+            
+            # Apply the renaming if we found any matches
+            if rename_map:
+                df = df.rename(columns=rename_map)
+            
+            # Check for required columns
+            required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            for col in required_columns:
+                if col not in df.columns:
+                    self.logger.warning(f"Missing column {col} in data")
+            
+            # Drop rows with NaN values in the Close price
+            if 'Close' in df.columns:
+                df = df.dropna(subset=['Close'])
+                
+                # Add returns column
+                df['Returns'] = df['Close'].pct_change()
+            
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error processing data: {str(e)}")
+            # If there's an error, return the original dataframe to avoid breaking things
+            return data
     
     def get_multiple_stocks_data(self, tickers, period='1y', interval='1d'):
         """

@@ -7,20 +7,45 @@ from typing import List, Dict, Any
 class BacktestEngine:
     """Engine for backtesting trading strategies on historical data."""
     
-    def __init__(self, data, strategies, initial_capital=10000.0, commission=0.001):
+    def __init__(self, data, strategies=None, buy_strategies=None, sell_strategies=None, 
+                 initial_capital=10000.0, commission=0.001, signal_threshold=0.2, 
+                 combine_method='average', separate_signals=False):
         """
         Initialize the backtest engine.
         
         Args:
             data (pandas.DataFrame): Historical price data with OHLCV columns
-            strategies (list): List of Strategy instances to test
+            strategies (list, optional): List of Strategy instances to use for both buy and sell signals
+            buy_strategies (list, optional): List of Strategy instances to use only for buy signals
+            sell_strategies (list, optional): List of Strategy instances to use only for sell signals
             initial_capital (float): Initial capital for the backtest
             commission (float): Commission rate per trade (e.g., 0.001 = 0.1%)
+            signal_threshold (float): Threshold for converting continuous signals to discrete (-1, 0, 1)
+            combine_method (str): Method to combine multiple strategy signals ('average', 'vote', 'unanimous', 'majority')
+            separate_signals (bool): Whether to use separate strategies for buy and sell signals
         """
         self.data = data
-        self.strategies = strategies
+        self.separate_signals = separate_signals
+        
+        # Handle strategy assignment based on whether using separate signals
+        if self.separate_signals:
+            # Separate strategies for buy and sell
+            self.buy_strategies = buy_strategies or []
+            self.sell_strategies = sell_strategies or []
+            self.strategies = []  # Not used in this mode
+            
+            if not self.buy_strategies or not self.sell_strategies:
+                raise ValueError("When using separate_signals=True, both buy_strategies and sell_strategies must be provided")
+        else:
+            # Same strategies for both buy and sell
+            self.strategies = strategies or []
+            self.buy_strategies = self.strategies  # Reference the same list
+            self.sell_strategies = self.strategies  # Reference the same list
+        
         self.initial_capital = initial_capital
         self.commission = commission
+        self.signal_threshold = signal_threshold
+        self.combine_method = combine_method
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -31,6 +56,12 @@ class BacktestEngine:
         self.positions = None
         self.trades = None
         self.performance_metrics = None
+        
+        # Validate combine method
+        valid_methods = ['average', 'vote', 'unanimous', 'majority', 'weighted']
+        if self.combine_method not in valid_methods:
+            self.logger.warning(f"Invalid combine_method '{combine_method}'. Using 'average' instead.")
+            self.combine_method = 'average'
     
     def run(self):
         """
@@ -41,8 +72,26 @@ class BacktestEngine:
         """
         self.logger.info("Starting backtest...")
         
-        # Generate signals for each strategy
-        combined_signal = self._generate_combined_signals()
+        if self.separate_signals:
+            self.logger.info("Using separate strategies for buy and sell signals")
+            # Generate buy and sell signals separately
+            buy_signals = self._generate_combined_signals(self.buy_strategies, signal_type='buy')
+            sell_signals = self._generate_combined_signals(self.sell_strategies, signal_type='sell')
+            
+            # Combine buy and sell signals into a single series
+            combined_signal = pd.Series(0, index=self.data.index)
+            combined_signal[buy_signals == 1] = 1  # Buy signals
+            combined_signal[sell_signals == -1] = -1  # Sell signals
+            
+            # In case of conflict (both buy and sell on the same day), prioritize sell
+            # This can be customized based on preference
+            conflict_days = (buy_signals == 1) & (sell_signals == -1)
+            if conflict_days.any():
+                self.logger.warning(f"Conflicts detected on {conflict_days.sum()} days. Prioritizing sell signals.")
+                combined_signal[conflict_days] = -1
+        else:
+            # Use the same strategies for both buy and sell signals
+            combined_signal = self._generate_combined_signals(self.strategies)
         
         # Execute the signals on the historical data
         results = self._execute_signals(combined_signal)
@@ -66,40 +115,149 @@ class BacktestEngine:
             "total_trades": metrics["total_trades"]
         }
     
-    def _generate_combined_signals(self):
+    def _generate_combined_signals(self, strategies, signal_type=None):
         """
-        Generate and combine trading signals from all strategies.
+        Generate and combine trading signals from provided strategies.
         
+        Args:
+            strategies (list): List of Strategy instances to use
+            signal_type (str, optional): Type of signal to generate ('buy', 'sell', or None for both)
+            
         Returns:
             pandas.Series: Combined trading signals
         """
-        self.logger.info(f"Generating signals using {len(self.strategies)} strategies...")
+        strategy_count = len(strategies)
+        signal_desc = f"{signal_type} " if signal_type else ""
+        self.logger.info(f"Generating {signal_desc}signals using {strategy_count} strategies with method: {self.combine_method}")
         
         # If there are no strategies, return a series of zeros (no signals)
-        if not self.strategies:
+        if not strategies:
             return pd.Series(0, index=self.data.index)
         
         # If only one strategy, use its signals
-        if len(self.strategies) == 1:
-            return self.strategies[0].generate_signals(self.data)
+        if strategy_count == 1:
+            signals = strategies[0].generate_signals(self.data)
+            
+            # If generating only buy or sell signals, filter out the other type
+            if signal_type == 'buy':
+                signals = signals.where(signals > 0, 0)  # Keep only buy signals
+            elif signal_type == 'sell':
+                signals = signals.where(signals < 0, 0)  # Keep only sell signals
+                
+            return signals
         
-        # For multiple strategies, take the average of signals
+        # Generate signals from each strategy
         all_signals = []
-        for strategy in self.strategies:
+        for strategy in strategies:
             signals = strategy.generate_signals(self.data)
+            
+            # If generating only buy or sell signals, filter out the other type
+            if signal_type == 'buy':
+                signals = signals.where(signals > 0, 0)  # Keep only buy signals
+            elif signal_type == 'sell':
+                signals = signals.where(signals < 0, 0)  # Keep only sell signals
+                
             all_signals.append(signals)
         
-        # Convert to DataFrame for easier averaging
+        # Convert to DataFrame for easier manipulation
         signals_df = pd.concat(all_signals, axis=1)
         
-        # Average the signals across strategies
-        combined_signals = signals_df.mean(axis=1)
-        
-        # Convert to discrete signals (-1, 0, 1)
-        # Threshold values can be adjusted as needed
-        discrete_signals = pd.Series(0, index=combined_signals.index)
-        discrete_signals[combined_signals > 0.2] = 1
-        discrete_signals[combined_signals < -0.2] = -1
+        # Combine signals based on the specified method
+        if self.combine_method == 'average':
+            # Take the average of all signals
+            combined_signals = signals_df.mean(axis=1)
+            
+            # Convert to discrete signals (-1, 0, 1) using threshold
+            discrete_signals = pd.Series(0, index=combined_signals.index)
+            
+            if signal_type != 'sell':  # Include buy signals
+                discrete_signals[combined_signals > self.signal_threshold] = 1
+            
+            if signal_type != 'buy':  # Include sell signals
+                discrete_signals[combined_signals < -self.signal_threshold] = -1
+            
+        elif self.combine_method == 'vote':
+            # Each strategy gets one vote
+            # Count the number of buy, sell, and hold signals
+            buys = (signals_df > 0).sum(axis=1)
+            sells = (signals_df < 0).sum(axis=1)
+            
+            # Use the most common signal
+            discrete_signals = pd.Series(0, index=signals_df.index)
+            
+            if signal_type != 'sell':  # Include buy signals
+                discrete_signals[buys > sells] = 1
+            
+            if signal_type != 'buy':  # Include sell signals
+                discrete_signals[sells > buys] = -1
+            
+        elif self.combine_method == 'unanimous':
+            # All strategies must agree
+            if signal_type != 'sell':  # Check for unanimous buy signals
+                buy_unanimous = (signals_df > 0).all(axis=1)
+            else:
+                buy_unanimous = pd.Series(False, index=signals_df.index)
+                
+            if signal_type != 'buy':  # Check for unanimous sell signals
+                sell_unanimous = (signals_df < 0).all(axis=1)
+            else:
+                sell_unanimous = pd.Series(False, index=signals_df.index)
+            
+            discrete_signals = pd.Series(0, index=signals_df.index)
+            discrete_signals[buy_unanimous] = 1
+            discrete_signals[sell_unanimous] = -1
+            
+        elif self.combine_method == 'majority':
+            # Majority of strategies must agree (more than 50%)
+            discrete_signals = pd.Series(0, index=signals_df.index)
+            
+            if signal_type != 'sell':  # Check for majority buy signals
+                buys = (signals_df > 0).sum(axis=1)
+                discrete_signals[buys > strategy_count / 2] = 1
+                
+            if signal_type != 'buy':  # Check for majority sell signals
+                sells = (signals_df < 0).sum(axis=1)
+                discrete_signals[sells > strategy_count / 2] = -1
+            
+        elif self.combine_method == 'weighted':
+            # If strategies have weights, use them
+            weighted_signals = None
+            
+            # Check if using a CompositeStrategy
+            if strategy_count == 1 and hasattr(strategies[0], 'weighting') and hasattr(strategies[0], 'strategies'):
+                # Get signals directly from the composite strategy
+                weighted_signals = strategies[0].generate_signals(self.data)
+                
+                # Apply signal type filtering if needed
+                if signal_type == 'buy':
+                    weighted_signals = weighted_signals.where(weighted_signals > 0, 0)
+                elif signal_type == 'sell':
+                    weighted_signals = weighted_signals.where(weighted_signals < 0, 0)
+            else:
+                # Manual weighting - default to equal weights
+                weights = [1.0 / strategy_count] * strategy_count
+                
+                # Generate weighted signals
+                weighted_signals = pd.Series(0, index=self.data.index)
+                for i, strategy in enumerate(strategies):
+                    signals = strategy.generate_signals(self.data)
+                    
+                    # Filter by signal type if needed
+                    if signal_type == 'buy':
+                        signals = signals.where(signals > 0, 0)
+                    elif signal_type == 'sell':
+                        signals = signals.where(signals < 0, 0)
+                        
+                    weighted_signals += signals * weights[i]
+            
+            # Convert to discrete signals based on thresholds
+            discrete_signals = pd.Series(0, index=weighted_signals.index)
+            
+            if signal_type != 'sell':  # Include buy signals
+                discrete_signals[weighted_signals > self.signal_threshold] = 1
+            
+            if signal_type != 'buy':  # Include sell signals
+                discrete_signals[weighted_signals < -self.signal_threshold] = -1
         
         return discrete_signals
     

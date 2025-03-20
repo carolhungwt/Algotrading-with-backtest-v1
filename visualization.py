@@ -39,18 +39,109 @@ class Visualizer:
         # Generate timestamp for filenames
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Plot portfolio value
+        # Create combined plot with three subplots
+        self._plot_combined_results(ticker, data, results, timestamp)
+        
+        # Also create individual plots for more detail
         self._plot_portfolio_value(ticker, results, timestamp)
-        
-        # Plot price chart with buy/sell signals
         self._plot_trading_signals(ticker, data, results, timestamp)
-        
-        # Plot drawdown
         self._plot_drawdown(ticker, results, timestamp)
         
         # Plot trade analysis
         if not results.get('trades', pd.DataFrame()).empty:
             self._plot_trade_analysis(ticker, results, timestamp)
+    
+    def _plot_combined_results(self, ticker, data, results, timestamp):
+        """
+        Create a single figure with three subplots: portfolio value, trading signals, and drawdown.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            data (pandas.DataFrame): Historical price data
+            results (dict): Dictionary containing backtest results
+            timestamp (str): Timestamp for filename
+        """
+        portfolio_value = results.get('portfolio_value')
+        trades = results.get('trades', pd.DataFrame())
+        
+        if portfolio_value is None:
+            return
+        
+        # Create figure with 3 subplots
+        fig, axes = plt.subplots(3, 1, figsize=(14, 16), sharex=True)
+        
+        # 1. Portfolio Value Plot
+        axes[0].plot(portfolio_value.index, portfolio_value.values)
+        axes[0].set_title(f'Portfolio Value - {ticker}')
+        axes[0].set_ylabel('Value ($)')
+        axes[0].grid(True)
+        
+        # Add annotations for metrics
+        metrics_text = (
+            f"Total Return: {results.get('total_return', 0):.2f}%\n"
+            f"Annual Return: {results.get('annual_return', 0):.2f}%\n"
+            f"Sharpe Ratio: {results.get('sharpe_ratio', 0):.2f}\n"
+            f"Max Drawdown: {results.get('max_drawdown', 0):.2f}%\n"
+            f"Total Trades: {results.get('total_trades', 0)}"
+        )
+        axes[0].annotate(metrics_text, xy=(0.02, 0.95), xycoords='axes fraction',
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.7))
+        
+        # 2. Trading Signals Plot
+        if not trades.empty:
+            # Plot price
+            axes[1].plot(data.index, data['Close'], label='Close Price', alpha=0.7)
+            
+            # Plot buy signals
+            buy_trades = trades[trades['action'] == 'BUY']
+            if not buy_trades.empty:
+                buy_dates = pd.to_datetime(buy_trades['date'])
+                buy_prices = buy_trades['price']
+                axes[1].scatter(buy_dates, buy_prices, marker='^', color='green', s=100, label='Buy')
+            
+            # Plot sell signals
+            sell_trades = trades[trades['action'] == 'SELL']
+            if not sell_trades.empty:
+                sell_dates = pd.to_datetime(sell_trades['date'])
+                sell_prices = sell_trades['price']
+                axes[1].scatter(sell_dates, sell_prices, marker='v', color='red', s=100, label='Sell')
+            
+            axes[1].set_title(f'Price Chart with Trading Signals - {ticker}')
+            axes[1].set_ylabel('Price')
+            axes[1].legend()
+            axes[1].grid(True)
+        
+        # 3. Drawdown Plot
+        running_max = portfolio_value.cummax()
+        drawdown = (portfolio_value / running_max - 1) * 100
+        
+        axes[2].plot(drawdown.index, drawdown.values)
+        axes[2].set_title(f'Portfolio Drawdown - {ticker}')
+        axes[2].set_xlabel('Date')
+        axes[2].set_ylabel('Drawdown (%)')
+        axes[2].grid(True)
+        
+        # Add max drawdown annotation
+        max_dd = drawdown.min()
+        max_dd_date = drawdown.idxmin()
+        axes[2].annotate(f'Max Drawdown: {max_dd:.2f}%', 
+                     xy=(max_dd_date, max_dd),
+                     xytext=(max_dd_date, max_dd - 5),
+                     arrowprops=dict(facecolor='black', shrink=0.05),
+                     horizontalalignment='center')
+        
+        # Format x-axis to show dates nicely
+        for ax in axes:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        
+        plt.tight_layout()
+        
+        # Save the figure
+        filename = f'output/images/{ticker}_combined_results_{timestamp}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        self.logger.info(f"Combined results chart saved to {filename}")
     
     def _plot_portfolio_value(self, ticker, results, timestamp):
         """Plot portfolio value over time."""
