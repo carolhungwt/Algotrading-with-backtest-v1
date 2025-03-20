@@ -3,13 +3,15 @@ import numpy as np
 from datetime import datetime
 import logging
 from typing import List, Dict, Any
+import matplotlib.pyplot as plt
 
 class BacktestEngine:
     """Engine for backtesting trading strategies on historical data."""
     
     def __init__(self, data, strategies=None, buy_strategies=None, sell_strategies=None, 
                  initial_capital=10000.0, commission=0.001, signal_threshold=0.2, 
-                 combine_method='average', separate_signals=False):
+                 combine_method='average', separate_signals=False,
+                 use_stop_loss=False, stop_loss_atr_multiplier=1.0, stop_loss_atr_period=14):
         """
         Initialize the backtest engine.
         
@@ -23,6 +25,9 @@ class BacktestEngine:
             signal_threshold (float): Threshold for converting continuous signals to discrete (-1, 0, 1)
             combine_method (str): Method to combine multiple strategy signals ('average', 'vote', 'unanimous', 'majority')
             separate_signals (bool): Whether to use separate strategies for buy and sell signals
+            use_stop_loss (bool): Whether to use stop loss orders
+            stop_loss_atr_multiplier (float): Multiplier for ATR to set stop loss distance
+            stop_loss_atr_period (int): Period for ATR calculation
         """
         self.data = data
         self.separate_signals = separate_signals
@@ -47,6 +52,11 @@ class BacktestEngine:
         self.signal_threshold = signal_threshold
         self.combine_method = combine_method
         
+        # Stop loss parameters
+        self.use_stop_loss = use_stop_loss
+        self.stop_loss_atr_multiplier = stop_loss_atr_multiplier
+        self.stop_loss_atr_period = stop_loss_atr_period
+        
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -65,15 +75,111 @@ class BacktestEngine:
     
     def run(self):
         """
-        Run the backtest using the provided strategies.
+        Run the backtest.
         
         Returns:
             dict: Dictionary containing backtest results
         """
         self.logger.info("Starting backtest...")
         
+        # Generate trading signals
+        signals = self._generate_signals()
+        
+        # Calculate ATR if stop loss is enabled
+        atr = None
+        if self.use_stop_loss:
+            atr = self._calculate_atr()
+        
+        # Initialize variables for tracking portfolio
+        self.portfolio_value = pd.Series(self.initial_capital, index=self.data.index)
+        self.trades = pd.DataFrame(columns=['date', 'action', 'price', 'shares', 'value', 'commission', 'trade_id', 'stop_loss_price', 'stopped_out'])
+        self.position = 0
+        self.cash = self.initial_capital
+        self.equity = self.initial_capital
+        self.trade_id = 0
+        self.stopped_out_count = 0  # Track number of trades stopped out
+        
+        # Variables for stop loss tracking
+        current_position_entry_price = 0
+        current_stop_loss_price = 0
+        
+        # Iterate through the data and execute trades
+        for i in range(1, len(self.data)):
+            date = self.data.index[i]
+            current_price = self.data['Close'][i]
+            
+            # Check if we hit a stop loss
+            hit_stop_loss = False
+            if self.use_stop_loss and self.position > 0 and not np.isnan(current_stop_loss_price):
+                # Check if the low price of the day went below the stop loss
+                if self.data['Low'][i] <= current_stop_loss_price:
+                    # Execute stop loss - use stop price or today's opening price, whichever is more conservative
+                    execute_price = max(current_stop_loss_price, self.data['Open'][i])
+                    self._execute_trade(date, 'SELL', execute_price, self.position, stopped_out=True)
+                    self.position = 0
+                    hit_stop_loss = True
+                    self.stopped_out_count += 1  # Increment stopped out counter
+                    self.logger.info(f"Stop loss triggered at {execute_price:.2f} on {date}")
+            
+            # If we didn't hit stop loss, check for regular signals
+            if not hit_stop_loss:
+                signal = signals[i]
+                
+                # Execute buy signal
+                if signal > self.signal_threshold and self.position == 0:
+                    # Calculate shares to buy
+                    shares_to_buy = int(self.cash / current_price)
+                    
+                    if shares_to_buy > 0:
+                        # Calculate stop loss if applicable
+                        stop_loss_price = None
+                        if self.use_stop_loss and i >= self.stop_loss_atr_period and not np.isnan(atr[i]):
+                            current_atr = atr[i]
+                            stop_distance = current_atr * self.stop_loss_atr_multiplier
+                            stop_loss_price = current_price - stop_distance
+                            current_stop_loss_price = stop_loss_price
+                            self.logger.info(f"Setting stop loss at {stop_loss_price:.2f} (ATR: {current_atr:.2f})")
+                        
+                        # Execute trade with stop loss price
+                        self._execute_trade(date, 'BUY', current_price, shares_to_buy, stop_loss_price=stop_loss_price)
+                        self.position = shares_to_buy
+                        current_position_entry_price = current_price
+                
+                # Execute sell signal
+                elif signal < -self.signal_threshold and self.position > 0:
+                    self._execute_trade(date, 'SELL', current_price, self.position)
+                    self.position = 0
+                    current_stop_loss_price = 0  # Reset stop loss
+            
+            # Update portfolio value
+            self.equity = self.cash + (self.position * current_price)
+            self.portfolio_value[i] = self.equity
+        
+        # Liquidate any remaining position at the end of the backtest
+        if self.position > 0:
+            last_date = self.data.index[-1]
+            last_price = self.data['Close'][-1]
+            self._execute_trade(last_date, 'SELL', last_price, self.position)
+            self.position = 0
+        
+        # Calculate backtest metrics
+        results = self._calculate_metrics()
+        
+        # Add stop loss metrics to results
+        if self.use_stop_loss:
+            results['stopped_out_count'] = self.stopped_out_count
+        
+        self.logger.info("Backtest completed.")
+        return results
+    
+    def _generate_signals(self):
+        """
+        Generate trading signals based on the strategies.
+        
+        Returns:
+            pandas.Series: Trading signals (1=buy, -1=sell, 0=hold)
+        """
         if self.separate_signals:
-            self.logger.info("Using separate strategies for buy and sell signals")
             # Generate buy and sell signals separately
             buy_signals = self._generate_combined_signals(self.buy_strategies, signal_type='buy')
             sell_signals = self._generate_combined_signals(self.sell_strategies, signal_type='sell')
@@ -93,27 +199,7 @@ class BacktestEngine:
             # Use the same strategies for both buy and sell signals
             combined_signal = self._generate_combined_signals(self.strategies)
         
-        # Execute the signals on the historical data
-        results = self._execute_signals(combined_signal)
-        
-        # Calculate performance metrics
-        metrics = self._calculate_performance_metrics(results)
-        
-        self.logger.info(f"Backtest complete. Final portfolio value: ${metrics['final_value']:.2f}")
-        
-        return {
-            "positions": results["positions"],
-            "portfolio_value": results["portfolio_value"],
-            "trades": results["trades"],
-            "signals": combined_signal,
-            "final_value": metrics["final_value"],
-            "total_return": metrics["total_return"],
-            "annual_return": metrics["annual_return"],
-            "sharpe_ratio": metrics["sharpe_ratio"],
-            "max_drawdown": metrics["max_drawdown"],
-            "win_rate": metrics["win_rate"],
-            "total_trades": metrics["total_trades"]
-        }
+        return combined_signal
     
     def _generate_combined_signals(self, strategies, signal_type=None):
         """
@@ -261,153 +347,53 @@ class BacktestEngine:
         
         return discrete_signals
     
-    def _execute_signals(self, signals):
+    def _execute_trade(self, date, action, price, shares, stop_loss_price=None, stopped_out=False):
         """
-        Execute trading signals on the historical data.
+        Execute a trade and record it.
         
         Args:
-            signals (pandas.Series): Trading signals (1=buy, -1=sell, 0=hold)
-            
-        Returns:
-            dict: Dictionary containing backtest results
+            date (datetime): Date of the trade
+            action (str): 'BUY' or 'SELL'
+            price (float): Price at which to execute the trade
+            shares (int): Number of shares to trade
+            stop_loss_price (float, optional): Stop loss price for this trade
+            stopped_out (bool, optional): Whether this trade was stopped out
         """
-        self.logger.info("Executing signals...")
+        value = price * shares
+        commission_amount = value * self.commission
         
-        # Initialize portfolio tracking variables
-        portfolio_value = pd.Series(index=self.data.index)
-        positions = pd.Series(0, index=self.data.index)
-        cash = pd.Series(self.initial_capital, index=self.data.index)
-        trades = []
-        
-        # Process each day in the backtest
-        for i, date in enumerate(self.data.index):
-            # Skip the first day (no previous data)
-            if i == 0:
-                portfolio_value[date] = self.initial_capital
-                continue
+        if action == 'BUY':
+            self.cash -= (value + commission_amount)
+            self.trade_id += 1
+        elif action == 'SELL':
+            self.cash += (value - commission_amount)
             
-            yesterday = self.data.index[i-1]
-            current_price = self.data['Close'][date]
-            current_position = positions[yesterday]
-            current_cash = cash[yesterday]
-            current_signal = signals[date]
-            
-            # Determine action based on signal and current position
-            # Buy signal and not already long
-            if current_signal == 1 and current_position == 0:
-                # Calculate max shares to buy with available cash
-                max_shares = int(current_cash / (current_price * (1 + self.commission)))
-                
-                # Record the trade if shares are bought
-                if max_shares > 0:
-                    positions[date] = max_shares
-                    trade_cost = max_shares * current_price * (1 + self.commission)
-                    cash[date] = current_cash - trade_cost
-                    
-                    trades.append({
-                        'date': date,
-                        'action': 'BUY',
-                        'price': current_price,
-                        'shares': max_shares,
-                        'value': max_shares * current_price,
-                        'commission': max_shares * current_price * self.commission,
-                        'total': trade_cost
-                    })
-                else:
-                    # Not enough cash to buy
-                    positions[date] = current_position
-                    cash[date] = current_cash
-            
-            # Sell signal and currently long
-            elif current_signal == -1 and current_position > 0:
-                positions[date] = 0  # Sell all shares
-                
-                # Calculate proceeds from sale
-                trade_value = current_position * current_price
-                commission_cost = trade_value * self.commission
-                trade_proceeds = trade_value - commission_cost
-                cash[date] = current_cash + trade_proceeds
-                
-                trades.append({
-                    'date': date,
-                    'action': 'SELL',
-                    'price': current_price,
-                    'shares': current_position,
-                    'value': trade_value,
-                    'commission': commission_cost,
-                    'total': trade_proceeds
-                })
-            
-            # No action or invalid action
-            else:
-                positions[date] = current_position
-                cash[date] = current_cash
-            
-            # Calculate portfolio value
-            portfolio_value[date] = positions[date] * current_price + cash[date]
-        
-        # Convert trades to DataFrame
-        trades_df = pd.DataFrame(trades)
-        
-        # Calculate trade P&L
-        if not trades_df.empty:
-            # Label each trade with a unique ID
-            trades_df['trade_id'] = None
-            current_trade_id = 0
-            
-            for i in range(len(trades_df)):
-                if trades_df.iloc[i]['action'] == 'BUY':
-                    current_trade_id += 1
-                    trades_df.iloc[i, trades_df.columns.get_loc('trade_id')] = current_trade_id
-                
-                elif trades_df.iloc[i]['action'] == 'SELL' and i > 0:
-                    # Find the most recent BUY
-                    for j in range(i-1, -1, -1):
-                        if trades_df.iloc[j]['action'] == 'BUY' and pd.isna(trades_df.iloc[j]['trade_id']):
-                            trades_df.iloc[i, trades_df.columns.get_loc('trade_id')] = current_trade_id
-                            break
-            
-            # Calculate profit/loss for each complete trade
-            buy_trades = trades_df[trades_df['action'] == 'BUY'].set_index('trade_id')
-            sell_trades = trades_df[trades_df['action'] == 'SELL'].set_index('trade_id')
-            
-            for trade_id in buy_trades.index:
-                if trade_id in sell_trades.index:
-                    buy_value = buy_trades.loc[trade_id, 'total']
-                    sell_value = sell_trades.loc[trade_id, 'total']
-                    profit = sell_value - buy_value
-                    profit_pct = (profit / buy_value) * 100
-                    
-                    # Add P&L to the sell trade
-                    idx = trades_df[
-                        (trades_df['trade_id'] == trade_id) & 
-                        (trades_df['action'] == 'SELL')
-                    ].index
-                    
-                    trades_df.loc[idx, 'profit_loss'] = profit
-                    trades_df.loc[idx, 'profit_loss_pct'] = profit_pct
-        
-        return {
-            "positions": positions,
-            "cash": cash,
-            "portfolio_value": portfolio_value,
-            "trades": trades_df
+        # Record the trade
+        trade_info = {
+            'date': date,
+            'action': action,
+            'price': price,
+            'shares': shares,
+            'value': value,
+            'commission': commission_amount,
+            'trade_id': self.trade_id,
+            'stop_loss_price': stop_loss_price,
+            'stopped_out': stopped_out
         }
+        
+        self.trades = pd.concat([self.trades, pd.DataFrame([trade_info])], ignore_index=True)
     
-    def _calculate_performance_metrics(self, results):
+    def _calculate_metrics(self):
         """
         Calculate performance metrics from backtest results.
         
-        Args:
-            results (dict): Dictionary containing backtest results
-            
         Returns:
             dict: Dictionary of performance metrics
         """
         self.logger.info("Calculating performance metrics...")
         
-        portfolio_value = results["portfolio_value"]
-        trades = results["trades"]
+        portfolio_value = self.portfolio_value
+        trades = self.trades
         
         # Basic metrics
         initial_value = self.initial_capital
@@ -436,21 +422,125 @@ class BacktestEngine:
         max_drawdown = drawdown.min()
         
         # Trade statistics
-        total_trades = len(trades) // 2  # Each trade has a buy and sell
+        total_trades = len(trades[trades['action'] == 'SELL'])  # Count sell transactions
         
         # Win rate
         if not trades.empty and 'profit_loss' in trades.columns:
-            winning_trades = trades[trades['profit_loss'] > 0]
+            winning_trades = trades[(trades['action'] == 'SELL') & (trades['profit_loss'] > 0)]
             win_rate = (len(winning_trades) / total_trades) * 100 if total_trades > 0 else 0
         else:
             win_rate = 0
         
-        return {
+        # Stop loss statistics
+        stopped_out_count = self.stopped_out_count if hasattr(self, 'stopped_out_count') else 0
+        
+        # Calculate P&L for each trade
+        if total_trades > 0:
+            # Match buy and sell trades by trade_id
+            buy_trades = trades[trades['action'] == 'BUY'].set_index('trade_id')
+            sell_trades = trades[trades['action'] == 'SELL'].set_index('trade_id')
+            
+            # For each trade_id, calculate P&L
+            for trade_id in buy_trades.index:
+                if trade_id in sell_trades.index:
+                    buy_price = buy_trades.loc[trade_id, 'price']
+                    buy_commission = buy_trades.loc[trade_id, 'commission']
+                    buy_value = buy_trades.loc[trade_id, 'value']
+                    
+                    sell_price = sell_trades.loc[trade_id, 'price']
+                    sell_commission = sell_trades.loc[trade_id, 'commission']
+                    sell_value = sell_trades.loc[trade_id, 'value']
+                    
+                    # Calculate profit/loss in dollars
+                    profit_loss = sell_value - buy_value - buy_commission - sell_commission
+                    
+                    # Calculate profit/loss percentage relative to buy value
+                    profit_loss_pct = (profit_loss / buy_value) * 100
+                    
+                    # Record in the trades DataFrame
+                    sell_idx = trades[(trades['trade_id'] == trade_id) & (trades['action'] == 'SELL')].index
+                    if len(sell_idx) > 0:
+                        trades.loc[sell_idx, 'profit_loss'] = profit_loss
+                        trades.loc[sell_idx, 'profit_loss_pct'] = profit_loss_pct
+            
+            # Update the trades DataFrame in the results dictionary
+            results['trades'] = trades
+        
+        results = {
             "final_value": final_value,
             "total_return": total_return,
             "annual_return": annual_return,
             "sharpe_ratio": sharpe_ratio,
             "max_drawdown": max_drawdown,
             "win_rate": win_rate,
-            "total_trades": total_trades
-        } 
+            "total_trades": total_trades,
+            "portfolio_value": portfolio_value,
+            "trades": trades
+        }
+        
+        # Add stop loss metrics if enabled
+        if self.use_stop_loss:
+            results['stopped_out_count'] = stopped_out_count
+            results['stop_loss_atr_multiplier'] = self.stop_loss_atr_multiplier
+            results['stop_loss_atr_period'] = self.stop_loss_atr_period
+        
+        return results
+    
+    def plot_results(self):
+        """Plot backtest results (for quick visualization during development)."""
+        if self.portfolio_value is None:
+            print("No backtest results to plot.")
+            return
+        
+        plt.figure(figsize=(12, 8))
+        
+        # Plot portfolio value
+        plt.subplot(2, 1, 1)
+        plt.plot(self.portfolio_value.index, self.portfolio_value.values)
+        plt.title('Portfolio Value')
+        plt.grid(True)
+        
+        # Plot trades on price chart
+        plt.subplot(2, 1, 2)
+        plt.plot(self.data.index, self.data['Close'])
+        
+        # Plot buy signals
+        buys = self.trades[self.trades['action'] == 'BUY']
+        plt.scatter(buys['date'], buys['price'], marker='^', color='g', label='Buy')
+        
+        # Plot sell signals
+        sells = self.trades[self.trades['action'] == 'SELL']
+        plt.scatter(sells['date'], sells['price'], marker='v', color='r', label='Sell')
+        
+        plt.title('Price & Trades')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.show()
+
+    def _calculate_atr(self):
+        """
+        Calculate Average True Range (ATR) for stop loss calculation.
+        
+        Returns:
+            pandas.Series: ATR values
+        """
+        self.logger.info("Calculating ATR...")
+        
+        high = self.data['High']
+        low = self.data['Low']
+        close = self.data['Close']
+        
+        # Calculate True Range
+        tr = pd.Series(0, index=self.data.index)
+        tr[1:] = pd.Series(high[1:] - low[1:], index=self.data.index[1:])
+        tr = tr.fillna(0)
+        
+        # Calculate ATR
+        atr = pd.Series(0, index=self.data.index)
+        atr[self.stop_loss_atr_period - 1] = tr[:self.stop_loss_atr_period].mean()
+        for i in range(self.stop_loss_atr_period, len(self.data)):
+            atr[i] = ((atr[i-1] * (self.stop_loss_atr_period - 1)) + tr[i]) / self.stop_loss_atr_period
+        
+        return atr 

@@ -115,6 +115,26 @@ class Visualizer:
                 sell_prices = sell_trades['price']
                 axes[1].scatter(sell_dates, sell_prices, marker='v', color='red', s=100, label='Sell')
             
+            # Plot stop loss levels if available
+            if 'stop_loss_price' in trades.columns:
+                stop_loss_trades = trades[(trades['action'] == 'BUY') & (~trades['stop_loss_price'].isna())]
+                if not stop_loss_trades.empty:
+                    for _, trade in stop_loss_trades.iterrows():
+                        trade_id = trade['trade_id']
+                        buy_date = pd.to_datetime(trade['date'])
+                        stop_price = trade['stop_loss_price']
+                        
+                        # Find the sell date for this trade
+                        sell_trade = trades[(trades['trade_id'] == trade_id) & (trades['action'] == 'SELL')]
+                        if not sell_trade.empty:
+                            sell_date = pd.to_datetime(sell_trade['date'].values[0])
+                            
+                            # Plot horizontal line for stop loss level from buy date to sell date
+                            date_range = pd.date_range(start=buy_date, end=sell_date)
+                            if len(date_range) > 0:
+                                axes[1].plot(date_range, [stop_price] * len(date_range), 
+                                         'r--', alpha=0.6, linewidth=1)
+            
             axes[1].set_title(f'Price Chart with Trading Signals - {ticker}')
             axes[1].set_ylabel('Price')
             axes[1].legend()
@@ -213,6 +233,31 @@ class Visualizer:
             sell_dates = pd.to_datetime(sell_trades['date'])
             sell_prices = sell_trades['price']
             plt.scatter(sell_dates, sell_prices, marker='v', color='red', s=100, label='Sell')
+        
+        # Plot stop loss levels if available
+        if 'stop_loss_price' in trades.columns:
+            stop_loss_trades = trades[(trades['action'] == 'BUY') & (~trades['stop_loss_price'].isna())]
+            if not stop_loss_trades.empty:
+                for _, trade in stop_loss_trades.iterrows():
+                    trade_id = trade['trade_id']
+                    buy_date = pd.to_datetime(trade['date'])
+                    stop_price = trade['stop_loss_price']
+                    
+                    # Find the sell date for this trade
+                    sell_trade = trades[(trades['trade_id'] == trade_id) & (trades['action'] == 'SELL')]
+                    if not sell_trade.empty:
+                        sell_date = pd.to_datetime(sell_trade['date'].values[0])
+                        
+                        # Plot horizontal line for stop loss level from buy date to sell date
+                        date_range = pd.date_range(start=buy_date, end=sell_date)
+                        if len(date_range) > 0:
+                            plt.plot(date_range, [stop_price] * len(date_range), 
+                                     'r--', alpha=0.6, linewidth=1)
+                            
+                            # Add a small text label
+                            plt.annotate('Stop', xy=(buy_date, stop_price),
+                                         xytext=(buy_date, stop_price * 0.98),
+                                         color='red', alpha=0.7, fontsize=8)
         
         plt.title(f'Price Chart with Trading Signals - {ticker}')
         plt.xlabel('Date')

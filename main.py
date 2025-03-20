@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import json
 import shutil
+import numpy as np
 
 from data_handler import DataHandler
 from backtest_engine import BacktestEngine
@@ -58,6 +59,14 @@ def save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_su
         f.write(f"Signal combination method: {args.combine_method}\n")
         f.write(f"Signal threshold: {args.signal_threshold}\n")
         
+        # Write stop loss parameters if enabled
+        if args.use_stop_loss:
+            f.write(f"Stop Loss: Enabled\n")
+            f.write(f"Stop Loss ATR Multiplier: {args.stop_loss_atr_multiplier}\n")
+            f.write(f"Stop Loss ATR Period: {args.stop_loss_atr_period}\n")
+        else:
+            f.write(f"Stop Loss: Disabled\n")
+        
         # Write custom parameters if provided
         if args.params and args.params.strip():
             f.write(f"Custom parameters: {args.params}\n")
@@ -89,6 +98,23 @@ def save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_su
             if 'commission_total' in results:
                 f.write(f"  Total Commission Costs: ${results['commission_total']:.2f}\n")
             
+            # Add stop loss information to each ticker's results
+            if args.use_stop_loss:
+                # Stop loss configuration
+                f.write(f"\n  STOP LOSS DETAILS (ATR × {args.stop_loss_atr_multiplier}, {args.stop_loss_atr_period} periods):\n")
+                
+                # Calculate how many trades were stopped out by stop loss, if available
+                if 'stopped_out_count' in results:
+                    stop_percentage = results['stopped_out_count'] / max(results['total_trades'], 1) * 100
+                    f.write(f"    Trades Stopped Out: {results['stopped_out_count']} ({stop_percentage:.1f}% of trades)\n")
+                
+                # Include profit/loss comparisons if available
+                if 'stopped_out_pl' in results and 'normal_pl' in results:
+                    f.write(f"    Stopped Out Trades P&L: ${results['stopped_out_pl']:.2f} (Avg: ${results['avg_stopped_pl']:.2f})\n")
+                    f.write(f"    Normal Exit Trades P&L: ${results['normal_pl']:.2f} (Avg: ${results['avg_normal_pl']:.2f})\n")
+                    f.write(f"    Stopped Out Win Rate: {results['stopped_win_rate']:.1f}%\n")
+                    f.write(f"    Normal Exit Win Rate: {results['normal_win_rate']:.1f}%\n")
+            
         f.write("\n" + "=" * 80 + "\n")
         f.write("END OF SUMMARY\n")
         f.write("=" * 80 + "\n")
@@ -118,6 +144,14 @@ def main():
                        help='Method to combine signals from multiple strategies')
     parser.add_argument('--signal-threshold', type=float, default=0.2, 
                        help='Threshold for converting continuous signals to discrete buy/sell signals')
+    
+    # Stop Loss parameters
+    parser.add_argument('--use-stop-loss', action='store_true', 
+                       help='Enable stop loss orders based on ATR')
+    parser.add_argument('--stop-loss-atr-multiplier', type=float, default=1.0, 
+                       help='Multiplier for ATR to determine stop loss distance (default: 1.0)')
+    parser.add_argument('--stop-loss-atr-period', type=int, default=14, 
+                       help='Period for ATR calculation (default: 14)')
     
     # Backtest parameters
     parser.add_argument('--initial-capital', type=float, default=10000.0, help='Initial capital for backtesting')
@@ -203,6 +237,10 @@ def main():
     
     print(f"Signal combination method: {args.combine_method}")
     
+    # Print stop loss details if enabled
+    if args.use_stop_loss:
+        print(f"Stop loss enabled: ATR multiplier = {args.stop_loss_atr_multiplier}, ATR period = {args.stop_loss_atr_period}")
+    
     # Dictionary to store results for summary
     results_summary = {}
     
@@ -226,7 +264,10 @@ def main():
                 commission=args.commission,
                 signal_threshold=args.signal_threshold,
                 combine_method=args.combine_method,
-                separate_signals=True
+                separate_signals=True,
+                use_stop_loss=args.use_stop_loss,
+                stop_loss_atr_multiplier=args.stop_loss_atr_multiplier,
+                stop_loss_atr_period=args.stop_loss_atr_period
             )
         else:
             backtest = BacktestEngine(
@@ -236,7 +277,10 @@ def main():
                 commission=args.commission,
                 signal_threshold=args.signal_threshold,
                 combine_method=args.combine_method,
-                separate_signals=False
+                separate_signals=False,
+                use_stop_loss=args.use_stop_loss,
+                stop_loss_atr_multiplier=args.stop_loss_atr_multiplier,
+                stop_loss_atr_period=args.stop_loss_atr_period
             )
         
         # Run backtest
@@ -252,6 +296,18 @@ def main():
             'win_rate': results['win_rate'],
             'total_trades': results['total_trades']
         }
+        
+        # Include stop loss metrics if available
+        if args.use_stop_loss:
+            stop_loss_metrics = [
+                'stopped_out_count', 'stop_loss_atr_multiplier', 'stop_loss_atr_period',
+                'stopped_out_pl', 'avg_stopped_pl', 'stopped_win_rate',
+                'normal_pl', 'avg_normal_pl', 'normal_win_rate'
+            ]
+            
+            for metric in stop_loss_metrics:
+                if metric in results:
+                    results_summary[ticker][metric] = results[metric]
         
         # Calculate total commission if trades were made
         if not results['trades'].empty:
@@ -270,8 +326,125 @@ def main():
         
         # Save trades to CSV in the backtest directory
         if not results['trades'].empty:
+            # Process the trades dataframe to enhance stop loss information
+            trades_df = results['trades'].copy()
+            
+            # Add a more descriptive stop loss column
+            if 'stopped_out' in trades_df.columns:
+                trades_df['Stop Loss Triggered'] = trades_df['stopped_out'].map({True: 'Yes', False: 'No', np.nan: 'N/A'})
+            
+            # Rename columns for clarity
+            trades_df = trades_df.rename(columns={
+                'date': 'Date', 
+                'action': 'Action',
+                'price': 'Price',
+                'shares': 'Shares',
+                'value': 'Value',
+                'commission': 'Commission',
+                'trade_id': 'Trade ID',
+                'stop_loss_price': 'Stop Loss Price',
+                'profit_loss': 'Profit/Loss ($)',
+                'profit_loss_pct': 'Profit/Loss (%)'
+            })
+            
+            # Format numeric columns to be more readable
+            for col in ['Price', 'Value', 'Commission', 'Stop Loss Price']:
+                if col in trades_df.columns:
+                    trades_df[col] = trades_df[col].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "")
+            
+            # Format profit/loss columns
+            if 'Profit/Loss ($)' in trades_df.columns:
+                trades_df['Profit/Loss ($)'] = trades_df['Profit/Loss ($)'].apply(
+                    lambda x: f"${x:.2f}" if pd.notnull(x) else "")
+            
+            if 'Profit/Loss (%)' in trades_df.columns:
+                trades_df['Profit/Loss (%)'] = trades_df['Profit/Loss (%)'].apply(
+                    lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+            
+            # Add a column to show if entry has stop loss protection
+            if args.use_stop_loss:
+                def get_stop_status(row):
+                    if row['Action'] == 'BUY':
+                        if pd.notnull(row['Stop Loss Price']) and row['Stop Loss Price'] != "":
+                            # Extract numeric value from formatted string
+                            try:
+                                price = float(row['Price'].replace('$', ''))
+                                stop_price = float(row['Stop Loss Price'].replace('$', ''))
+                                pct_below = ((price - stop_price) / price * 100)
+                                return f"Protected: {row['Stop Loss Price']} ({pct_below:.2f}% below entry)"
+                            except:
+                                return "Protected"
+                        else:
+                            return "Not Protected"
+                    return "N/A"
+                
+                trades_df['Stop Loss Status'] = trades_df.apply(get_stop_status, axis=1)
+                
+                # For each sell trade, check if it was matched with a buy trade that had a stop loss
+                trades_df['Entry Had Stop'] = np.nan
+                
+                for trade_id in trades_df['Trade ID'].unique():
+                    buy_trade = trades_df[(trades_df['Trade ID'] == trade_id) & (trades_df['Action'] == 'BUY')]
+                    if not buy_trade.empty:
+                        has_stop = buy_trade['Stop Loss Price'].iloc[0] != ""
+                        sell_indices = trades_df[(trades_df['Trade ID'] == trade_id) & (trades_df['Action'] == 'SELL')].index
+                        trades_df.loc[sell_indices, 'Entry Had Stop'] = 'Yes' if has_stop else 'No'
+            
+            # Add a result column for sell trades to indicate if the trade was profitable
+            if 'Profit/Loss ($)' in trades_df.columns:
+                def get_result(row):
+                    if row['Action'] == 'SELL' and row['Profit/Loss ($)'] != "":
+                        try:
+                            profit = float(row['Profit/Loss ($)'].replace('$', ''))
+                            if profit > 0:
+                                return "Profit"
+                            elif profit < 0:
+                                return "Loss"
+                            else:
+                                return "Breakeven"
+                        except:
+                            return ""
+                    return ""
+                
+                trades_df['Result'] = trades_df.apply(get_result, axis=1)
+                
+                # Add a column to show if the trade was stopped out but still profitable
+                if 'Stop Loss Triggered' in trades_df.columns:
+                    def stopped_but_profitable(row):
+                        if row['Action'] == 'SELL' and row['Stop Loss Triggered'] == 'Yes':
+                            if row['Result'] == 'Profit':
+                                return "Yes (Profitable stop-out)"
+                            else:
+                                return "No (Loss on stop-out)"
+                        return ""
+                    
+                    trades_df['Profitable Stop-Out'] = trades_df.apply(stopped_but_profitable, axis=1)
+            
+            # Reorder columns for better readability
+            if args.use_stop_loss:
+                # If using stop loss, prioritize stop loss columns
+                column_order = ['Date', 'Action', 'Price', 'Shares', 'Value', 'Commission', 
+                                'Trade ID', 'Stop Loss Price', 'Stop Loss Status', 
+                                'Stop Loss Triggered', 'Entry Had Stop']
+                
+                # Add profit/loss columns if they exist
+                pl_columns = ['Profit/Loss ($)', 'Profit/Loss (%)', 'Result', 'Profitable Stop-Out']
+                for col in pl_columns:
+                    if col in trades_df.columns:
+                        column_order.append(col)
+                
+                # Add any remaining columns
+                for col in trades_df.columns:
+                    if col not in column_order:
+                        column_order.append(col)
+                
+                # Filter to only include columns that actually exist
+                column_order = [col for col in column_order if col in trades_df.columns]
+                trades_df = trades_df[column_order]
+            
+            # Save the enhanced dataframe to CSV
             csv_path = f"{backtest_dir}/csv/{ticker}_trades.csv"
-            results['trades'].to_csv(csv_path)
+            trades_df.to_csv(csv_path, index=False)
             print(f"Trade details saved to {csv_path}")
         else:
             print("No trades were made in this backtest.")
