@@ -10,16 +10,25 @@ import logging
 class Visualizer:
     """Handles visualization of backtest results."""
     
-    def __init__(self):
-        """Initialize the Visualizer."""
+    def __init__(self, output_dir=None):
+        """
+        Initialize the Visualizer.
+        
+        Args:
+            output_dir (str, optional): Custom directory to save visualizations
+        """
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
         
+        # Set output directory
+        self.output_dir = output_dir or 'output'
+        self.images_dir = os.path.join(self.output_dir, 'images')
+        
         # Create output directory if it doesn't exist
-        if not os.path.exists('output'):
-            os.makedirs('output')
-        if not os.path.exists('output/images'):
-            os.makedirs('output/images')
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
+        if not os.path.exists(self.images_dir):
+            os.makedirs(self.images_dir)
         
         # Set plot style
         plt.style.use('ggplot')
@@ -138,7 +147,7 @@ class Visualizer:
         plt.tight_layout()
         
         # Save the figure
-        filename = f'output/images/{ticker}_combined_results_{timestamp}.png'
+        filename = os.path.join(self.images_dir, f'{ticker}_combined_results.png')
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Combined results chart saved to {filename}")
@@ -174,7 +183,7 @@ class Visualizer:
                     bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.7))
         
         # Save the figure
-        filename = f'output/images/{ticker}_portfolio_value_{timestamp}.png'
+        filename = os.path.join(self.images_dir, f'{ticker}_portfolio_value.png')
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Portfolio value chart saved to {filename}")
@@ -217,7 +226,7 @@ class Visualizer:
         plt.gcf().autofmt_xdate()
         
         # Save the figure
-        filename = f'output/images/{ticker}_trading_signals_{timestamp}.png'
+        filename = os.path.join(self.images_dir, f'{ticker}_trading_signals.png')
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Trading signals chart saved to {filename}")
@@ -254,7 +263,7 @@ class Visualizer:
                      horizontalalignment='center')
         
         # Save the figure
-        filename = f'output/images/{ticker}_drawdown_{timestamp}.png'
+        filename = os.path.join(self.images_dir, f'{ticker}_drawdown.png')
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Drawdown chart saved to {filename}")
@@ -298,7 +307,7 @@ class Visualizer:
         ax2.set_ylabel('Cumulative P&L ($)', color='blue')
         
         # Save the figure
-        filename = f'output/images/{ticker}_trade_pnl_{timestamp}.png'
+        filename = os.path.join(self.images_dir, f'{ticker}_trade_pnl.png')
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Trade P&L chart saved to {filename}")
@@ -342,7 +351,7 @@ class Visualizer:
                 plt.grid(True)
                 
                 # Save the figure
-                filename = f'output/images/{ticker}_trade_duration_{timestamp}.png'
+                filename = os.path.join(self.images_dir, f'{ticker}_trade_duration.png')
                 plt.savefig(filename, dpi=300, bbox_inches='tight')
                 plt.close()
                 self.logger.info(f"Trade duration analysis saved to {filename}")
@@ -387,8 +396,7 @@ class Visualizer:
         plt.gcf().autofmt_xdate()
         
         # Save the figure
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'output/images/strategy_comparison_{timestamp}.png'
+        filename = os.path.join(self.images_dir, 'strategy_comparison.png')
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
         self.logger.info(f"Strategy comparison chart saved to {filename}")

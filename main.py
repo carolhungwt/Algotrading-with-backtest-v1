@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import os
 import json
+import shutil
 
 from data_handler import DataHandler
 from backtest_engine import BacktestEngine
@@ -13,10 +14,86 @@ def create_output_directory():
     """Create output directory if it doesn't exist"""
     if not os.path.exists("output"):
         os.makedirs("output")
-    if not os.path.exists("output/csv"):
-        os.makedirs("output/csv")
-    if not os.path.exists("output/images"):
-        os.makedirs("output/images")
+
+def create_backtest_directory():
+    """Create a unique directory for this backtest run"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backtest_dir = f"output/backtest_{timestamp}"
+    os.makedirs(backtest_dir)
+    os.makedirs(f"{backtest_dir}/images")
+    os.makedirs(f"{backtest_dir}/csv")
+    return backtest_dir
+
+def save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_summary):
+    """Save a summary text file with all backtest parameters and results"""
+    summary_path = f"{backtest_dir}/summary.txt"
+    
+    with open(summary_path, 'w') as f:
+        # Write header
+        f.write("=" * 80 + "\n")
+        f.write(f"BACKTEST SUMMARY\n")
+        f.write("=" * 80 + "\n\n")
+        
+        # Write date and time
+        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        # Write data parameters
+        f.write("DATA PARAMETERS:\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Tickers: {', '.join(tickers)}\n")
+        f.write(f"Period: {args.period}\n")
+        f.write(f"Interval: {args.interval}\n\n")
+        
+        # Write strategy parameters
+        f.write("STRATEGY PARAMETERS:\n")
+        f.write("-" * 80 + "\n")
+        
+        if args.separate_signals:
+            f.write("Using separate strategies for buy and sell signals\n")
+            f.write(f"Buy strategies: {strategy_info['buy_strategies']}\n")
+            f.write(f"Sell strategies: {strategy_info['sell_strategies']}\n")
+        else:
+            f.write(f"Strategies: {strategy_info['strategies']}\n")
+        
+        f.write(f"Signal combination method: {args.combine_method}\n")
+        f.write(f"Signal threshold: {args.signal_threshold}\n")
+        
+        # Write custom parameters if provided
+        if args.params and args.params.strip():
+            f.write(f"Custom parameters: {args.params}\n")
+        
+        f.write("\n")
+        
+        # Write backtest parameters
+        f.write("BACKTEST PARAMETERS:\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Initial capital: ${args.initial_capital:.2f}\n")
+        f.write(f"Commission rate: {args.commission * 100:.3f}%\n\n")
+        
+        # Write results for each ticker
+        f.write("RESULTS:\n")
+        f.write("-" * 80 + "\n")
+        
+        for ticker, results in results_summary.items():
+            f.write(f"\nResults for {ticker}:\n")
+            f.write(f"  Final Portfolio Value: ${results['final_value']:.2f}\n")
+            f.write(f"  Net Profit: ${results['final_value'] - args.initial_capital:.2f}\n")
+            f.write(f"  Total Return: {results['total_return']:.2f}%\n")
+            f.write(f"  Annual Return: {results['annual_return']:.2f}%\n")
+            f.write(f"  Sharpe Ratio: {results['sharpe_ratio']:.2f}\n")
+            f.write(f"  Max Drawdown: {results['max_drawdown']:.2f}%\n")
+            f.write(f"  Number of Trades: {results['total_trades']}\n")
+            f.write(f"  Win Rate: {results['win_rate']:.2f}%\n")
+            
+            # Calculate commission costs if trades were made
+            if 'commission_total' in results:
+                f.write(f"  Total Commission Costs: ${results['commission_total']:.2f}\n")
+            
+        f.write("\n" + "=" * 80 + "\n")
+        f.write("END OF SUMMARY\n")
+        f.write("=" * 80 + "\n")
+    
+    return summary_path
 
 def main():
     parser = argparse.ArgumentParser(description='AlgoTrade Backtesting System')
@@ -52,7 +129,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Create output directories
+    # Create base output directory
     create_output_directory()
     
     # Initialize strategy manager
@@ -80,12 +157,19 @@ def main():
     
     # Initialize components
     data_handler = DataHandler()
-    visualizer = Visualizer()
+    
+    # Create a unique directory for this backtest run
+    backtest_dir = create_backtest_directory()
+    print(f"Saving backtest results to: {backtest_dir}")
+    
+    # Create visualizer with custom output directory
+    visualizer = Visualizer(output_dir=backtest_dir)
     
     # Load strategies based on whether using separate signals
     strategies = []
     buy_strategies = []
     sell_strategies = []
+    strategy_info = {'strategies': '', 'buy_strategies': '', 'sell_strategies': ''}
     
     if args.separate_signals:
         if not args.buy_strategies or not args.sell_strategies:
@@ -100,6 +184,9 @@ def main():
         sell_strategy_names = [s.strip() for s in args.sell_strategies.split(',')]
         sell_strategies = strategy_manager.load_strategies(sell_strategy_names, args.params)
         
+        strategy_info['buy_strategies'] = ', '.join(buy_strategy_names)
+        strategy_info['sell_strategies'] = ', '.join(sell_strategy_names)
+        
         print(f"Starting backtest for tickers: {', '.join(tickers)}")
         print(f"Using separate strategies:")
         print(f"  Buy strategies: {', '.join(buy_strategy_names)}")
@@ -109,10 +196,15 @@ def main():
         strategy_names = [s.strip() for s in args.strategies.split(',')]
         strategies = strategy_manager.load_strategies(strategy_names, args.params)
         
+        strategy_info['strategies'] = ', '.join(strategy_names)
+        
         print(f"Starting backtest for tickers: {', '.join(tickers)}")
         print(f"Using strategies: {', '.join(strategy_names)}")
     
     print(f"Signal combination method: {args.combine_method}")
+    
+    # Dictionary to store results for summary
+    results_summary = {}
     
     # Run backtest for each ticker
     for ticker in tickers:
@@ -150,6 +242,22 @@ def main():
         # Run backtest
         results = backtest.run()
         
+        # Store results for summary
+        results_summary[ticker] = {
+            'final_value': results['final_value'],
+            'total_return': results['total_return'],
+            'annual_return': results['annual_return'],
+            'sharpe_ratio': results['sharpe_ratio'],
+            'max_drawdown': results['max_drawdown'],
+            'win_rate': results['win_rate'],
+            'total_trades': results['total_trades']
+        }
+        
+        # Calculate total commission if trades were made
+        if not results['trades'].empty:
+            total_commission = results['trades']['commission'].sum()
+            results_summary[ticker]['commission_total'] = total_commission
+        
         # Display results
         print("\nBacktest Results:")
         print(f"Final Portfolio Value: ${results['final_value']:.2f}")
@@ -157,17 +265,20 @@ def main():
         print(f"Number of Trades: {results['total_trades']}")
         print(f"Win Rate: {results['win_rate']:.2f}%")
         
-        # Visualize results
+        # Visualize results to the backtest directory
         visualizer.plot_backtest_results(ticker, data, results)
         
-        # Save results
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_path = f"output/csv/{ticker}_{timestamp}.csv"
+        # Save trades to CSV in the backtest directory
         if not results['trades'].empty:
+            csv_path = f"{backtest_dir}/csv/{ticker}_trades.csv"
             results['trades'].to_csv(csv_path)
             print(f"Trade details saved to {csv_path}")
         else:
             print("No trades were made in this backtest.")
-        
+    
+    # Generate and save the backtest summary
+    summary_path = save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_summary)
+    print(f"\nBacktest summary saved to: {summary_path}")
+    
 if __name__ == "__main__":
     main() 
