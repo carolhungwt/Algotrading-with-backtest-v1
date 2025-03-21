@@ -5,11 +5,13 @@ import os
 import json
 import shutil
 import numpy as np
+import uuid
 
 from data_handler import DataHandler
 from backtest_engine import BacktestEngine
 from strategy_manager import StrategyManager
 from visualization import Visualizer
+from logbook import Logbook
 
 def create_output_directory():
     """Create output directory if it doesn't exist"""
@@ -19,11 +21,12 @@ def create_output_directory():
 def create_backtest_directory():
     """Create a unique directory for this backtest run"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backtest_dir = f"output/backtest_{timestamp}"
+    backtest_id = f"backtest_{timestamp}"
+    backtest_dir = f"output/{backtest_id}"
     os.makedirs(backtest_dir)
     os.makedirs(f"{backtest_dir}/images")
     os.makedirs(f"{backtest_dir}/csv")
-    return backtest_dir
+    return backtest_dir, backtest_id
 
 def save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_summary):
     """Save a summary text file with all backtest parameters and results"""
@@ -161,6 +164,9 @@ def main():
     parser.add_argument('--output-dir', type=str, default='output', help='Directory to save results')
     parser.add_argument('--list-strategies', action='store_true', help='List all available strategies and exit')
     
+    # New logging specific arguments
+    parser.add_argument('--no-logging', action='store_true', help='Disable logging to the logbook system')
+    
     args = parser.parse_args()
     
     # Create base output directory
@@ -168,6 +174,9 @@ def main():
     
     # Initialize strategy manager
     strategy_manager = StrategyManager()
+    
+    # Initialize logbook
+    logbook = Logbook()
     
     # If list_strategies flag is set, print available strategies and exit
     if args.list_strategies:
@@ -193,7 +202,7 @@ def main():
     data_handler = DataHandler()
     
     # Create a unique directory for this backtest run
-    backtest_dir = create_backtest_directory()
+    backtest_dir, backtest_id = create_backtest_directory()
     print(f"Saving backtest results to: {backtest_dir}")
     
     # Create visualizer with custom output directory
@@ -320,6 +329,17 @@ def main():
         print(f"Total Return: {results['total_return']:.2f}%")
         print(f"Number of Trades: {results['total_trades']}")
         print(f"Win Rate: {results['win_rate']:.2f}%")
+        
+        # Log results to the logbook system
+        if not args.no_logging:
+            logbook.log_backtest(
+                ticker=ticker,
+                backtest_results=results,
+                strategy_info=strategy_info,
+                args=args,
+                backtest_id=backtest_id
+            )
+            print(f"Results logged to logbook for {ticker}")
         
         # Visualize results to the backtest directory
         visualizer.plot_backtest_results(ticker, data, results)
@@ -458,6 +478,14 @@ def main():
     # Generate and save the backtest summary
     summary_path = save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_summary)
     print(f"\nBacktest summary saved to: {summary_path}")
+    
+    # Print information about the logbook
+    if not args.no_logging:
+        print("\nStrategy performance has been logged to the logbook system.")
+        print("You can analyze past performance using the logbook module.")
+        print(f"- Master log: logs/master_log.csv")
+        print(f"- Ticker-specific logs: logs/tickers/")
+        print(f"- Trade details: logs/trades/")
     
 if __name__ == "__main__":
     main() 
