@@ -158,7 +158,7 @@ class BacktestEngine:
         # Liquidate any remaining position at the end of the backtest
         if self.position > 0:
             last_date = self.data.index[-1]
-            last_price = self.data['Close'][-1]
+            last_price = self.data['Close'].iloc[-1]
             self._execute_trade(last_date, 'SELL', last_price, self.position)
             self.position = 0
         
@@ -462,10 +462,8 @@ class BacktestEngine:
                     if len(sell_idx) > 0:
                         trades.loc[sell_idx, 'profit_loss'] = profit_loss
                         trades.loc[sell_idx, 'profit_loss_pct'] = profit_loss_pct
-            
-            # Update the trades DataFrame in the results dictionary
-            results['trades'] = trades
         
+        # Create the results dictionary
         results = {
             "final_value": final_value,
             "total_return": total_return,
@@ -483,6 +481,30 @@ class BacktestEngine:
             results['stopped_out_count'] = stopped_out_count
             results['stop_loss_atr_multiplier'] = self.stop_loss_atr_multiplier
             results['stop_loss_atr_period'] = self.stop_loss_atr_period
+            
+            # Calculate P&L for normal vs stopped out trades if we have P&L data
+            if not trades.empty and 'profit_loss' in trades.columns:
+                # Calculate P&L for stopped out trades
+                stopped_trades = trades[(trades['action'] == 'SELL') & (trades['stopped_out'] == True)]
+                if not stopped_trades.empty:
+                    results['stopped_out_pl'] = stopped_trades['profit_loss'].sum()
+                    results['avg_stopped_pl'] = stopped_trades['profit_loss'].mean()
+                    results['stopped_win_rate'] = (stopped_trades['profit_loss'] > 0).mean() * 100
+                else:
+                    results['stopped_out_pl'] = 0
+                    results['avg_stopped_pl'] = 0
+                    results['stopped_win_rate'] = 0
+                    
+                # Calculate P&L for normal exit trades
+                normal_trades = trades[(trades['action'] == 'SELL') & (trades['stopped_out'] == False)]
+                if not normal_trades.empty:
+                    results['normal_pl'] = normal_trades['profit_loss'].sum()
+                    results['avg_normal_pl'] = normal_trades['profit_loss'].mean()
+                    results['normal_win_rate'] = (normal_trades['profit_loss'] > 0).mean() * 100
+                else:
+                    results['normal_pl'] = 0
+                    results['avg_normal_pl'] = 0
+                    results['normal_win_rate'] = 0
         
         return results
     
@@ -539,8 +561,11 @@ class BacktestEngine:
         
         # Calculate ATR
         atr = pd.Series(0, index=self.data.index)
-        atr[self.stop_loss_atr_period - 1] = tr[:self.stop_loss_atr_period].mean()
-        for i in range(self.stop_loss_atr_period, len(self.data)):
-            atr[i] = ((atr[i-1] * (self.stop_loss_atr_period - 1)) + tr[i]) / self.stop_loss_atr_period
+        # First ATR value is just the average of first n periods
+        atr.iloc[self.stop_loss_atr_period - 1] = tr[:self.stop_loss_atr_period].mean()
+
+        # Calculate ATR using smoothing method
+        for i in range(self.stop_loss_atr_period, len(tr)):
+            atr.iloc[i] = (atr.iloc[i-1] * (self.stop_loss_atr_period - 1) + tr.iloc[i]) / self.stop_loss_atr_period
         
         return atr 

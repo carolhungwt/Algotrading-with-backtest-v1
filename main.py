@@ -331,7 +331,12 @@ def main():
             
             # Add a more descriptive stop loss column
             if 'stopped_out' in trades_df.columns:
-                trades_df['Stop Loss Triggered'] = trades_df['stopped_out'].map({True: 'Yes', False: 'No', np.nan: 'N/A'})
+                # Initialize with object dtype to allow string values
+                trades_df['Stop Loss Triggered'] = pd.NA
+                # Then map the values
+                trades_df.loc[trades_df['stopped_out'] == True, 'Stop Loss Triggered'] = 'Yes'
+                trades_df.loc[trades_df['stopped_out'] == False, 'Stop Loss Triggered'] = 'No'
+                trades_df.loc[trades_df['stopped_out'].isna(), 'Stop Loss Triggered'] = 'N/A'
             
             # Rename columns for clarity
             trades_df = trades_df.rename(columns={
@@ -363,7 +368,11 @@ def main():
             
             # Add a column to show if entry has stop loss protection
             if args.use_stop_loss:
-                def get_stop_status(row):
+                # Initialize with object dtype
+                trades_df['Stop Loss Status'] = pd.NA
+                
+                # Only process rows with valid data
+                for idx, row in trades_df.iterrows():
                     if row['Action'] == 'BUY':
                         if pd.notnull(row['Stop Loss Price']) and row['Stop Loss Price'] != "":
                             # Extract numeric value from formatted string
@@ -371,54 +380,51 @@ def main():
                                 price = float(row['Price'].replace('$', ''))
                                 stop_price = float(row['Stop Loss Price'].replace('$', ''))
                                 pct_below = ((price - stop_price) / price * 100)
-                                return f"Protected: {row['Stop Loss Price']} ({pct_below:.2f}% below entry)"
+                                trades_df.loc[idx, 'Stop Loss Status'] = f"Protected: {row['Stop Loss Price']} ({pct_below:.2f}% below entry)"
                             except:
-                                return "Protected"
+                                trades_df.loc[idx, 'Stop Loss Status'] = "Protected"
                         else:
-                            return "Not Protected"
-                    return "N/A"
-                
-                trades_df['Stop Loss Status'] = trades_df.apply(get_stop_status, axis=1)
-                
-                # For each sell trade, check if it was matched with a buy trade that had a stop loss
-                trades_df['Entry Had Stop'] = np.nan
-                
-                for trade_id in trades_df['Trade ID'].unique():
-                    buy_trade = trades_df[(trades_df['Trade ID'] == trade_id) & (trades_df['Action'] == 'BUY')]
-                    if not buy_trade.empty:
-                        has_stop = buy_trade['Stop Loss Price'].iloc[0] != ""
-                        sell_indices = trades_df[(trades_df['Trade ID'] == trade_id) & (trades_df['Action'] == 'SELL')].index
-                        trades_df.loc[sell_indices, 'Entry Had Stop'] = 'Yes' if has_stop else 'No'
+                            trades_df.loc[idx, 'Stop Loss Status'] = "Not Protected"
+                    else:
+                        trades_df.loc[idx, 'Stop Loss Status'] = "N/A"
             
             # Add a result column for sell trades to indicate if the trade was profitable
             if 'Profit/Loss ($)' in trades_df.columns:
-                def get_result(row):
-                    if row['Action'] == 'SELL' and row['Profit/Loss ($)'] != "":
+                # Initialize with object dtype
+                trades_df['Result'] = pd.NA
+                
+                # Process only sell trades
+                sell_trades = trades_df['Action'] == 'SELL'
+                
+                # Only process rows with valid profit/loss values
+                for idx, row in trades_df[sell_trades].iterrows():
+                    if row['Profit/Loss ($)'] != "":
                         try:
                             profit = float(row['Profit/Loss ($)'].replace('$', ''))
                             if profit > 0:
-                                return "Profit"
+                                trades_df.loc[idx, 'Result'] = "Profit"
                             elif profit < 0:
-                                return "Loss"
+                                trades_df.loc[idx, 'Result'] = "Loss"
                             else:
-                                return "Breakeven"
+                                trades_df.loc[idx, 'Result'] = "Breakeven"
                         except:
-                            return ""
-                    return ""
+                            pass
+            
+            # Add a column to show if the trade was stopped out but still profitable
+            if 'Stop Loss Triggered' in trades_df.columns:
+                # Initialize with object dtype before assigning strings
+                trades_df['Profitable Stop-Out'] = pd.NA
                 
-                trades_df['Result'] = trades_df.apply(get_result, axis=1)
+                # Set values only for relevant rows
+                sell_and_stopped = (trades_df['Action'] == 'SELL') & (trades_df['Stop Loss Triggered'] == 'Yes')
                 
-                # Add a column to show if the trade was stopped out but still profitable
-                if 'Stop Loss Triggered' in trades_df.columns:
-                    def stopped_but_profitable(row):
-                        if row['Action'] == 'SELL' and row['Stop Loss Triggered'] == 'Yes':
-                            if row['Result'] == 'Profit':
-                                return "Yes (Profitable stop-out)"
-                            else:
-                                return "No (Loss on stop-out)"
-                        return ""
+                # Set values based on profitability for stopped out trades
+                if 'Result' in trades_df.columns:
+                    profitable_stops = sell_and_stopped & (trades_df['Result'] == 'Profit')
+                    trades_df.loc[profitable_stops, 'Profitable Stop-Out'] = "Yes (Profitable stop-out)"
                     
-                    trades_df['Profitable Stop-Out'] = trades_df.apply(stopped_but_profitable, axis=1)
+                    loss_stops = sell_and_stopped & (trades_df['Result'] == 'Loss')
+                    trades_df.loc[loss_stops, 'Profitable Stop-Out'] = "No (Loss on stop-out)"
             
             # Reorder columns for better readability
             if args.use_stop_loss:
