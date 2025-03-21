@@ -94,11 +94,13 @@ class StrategyManager:
         from strategies.rsi import RSIStrategy
         from strategies.macd import MACDStrategy
         from strategies.bollinger_bands import BollingerBandsStrategy
+        from strategies.triple_ma_crossover import TripleMASlope
         
         strategies["SimpleMovingAverageCrossover"] = SimpleMovingAverageCrossover
         strategies["RSIStrategy"] = RSIStrategy
         strategies["MACDStrategy"] = MACDStrategy
         strategies["BollingerBandsStrategy"] = BollingerBandsStrategy
+        strategies["TripleMASlope"] = TripleMASlope
         
         self.logger.info(f"Discovered {len(strategies)} strategies: {', '.join(strategies.keys())}")
         return strategies

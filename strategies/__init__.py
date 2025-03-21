@@ -7,6 +7,7 @@ from strategies.rsi import RSIStrategy
 from strategies.macd import MACDStrategy
 from strategies.bollinger_bands import BollingerBandsStrategy
 from strategies.composite import CompositeStrategy
+from strategies.triple_ma_crossover import TripleMASlope
 
 __all__ = [
     'Strategy',
@@ -14,5 +15,6 @@ __all__ = [
     'RSIStrategy',
     'MACDStrategy',
     'BollingerBandsStrategy',
-    'CompositeStrategy'
+    'CompositeStrategy',
+    'TripleMASlope'
 ] 
