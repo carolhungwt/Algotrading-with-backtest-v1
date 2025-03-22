@@ -6,6 +6,7 @@ import json
 import shutil
 import numpy as np
 import uuid
+import matplotlib.pyplot as plt
 
 from data_handler import DataHandler
 from backtest_engine import BacktestEngine
@@ -160,6 +161,14 @@ def main():
     parser.add_argument('--initial-capital', type=float, default=10000.0, help='Initial capital for backtesting')
     parser.add_argument('--commission', type=float, default=0.001, help='Commission rate per trade')
     
+    # Scanning mode parameters (new)
+    parser.add_argument('--scanning-mode', action='store_true', 
+                       help='Run in scanning mode to identify signals without executing trades')
+    parser.add_argument('--scan-for', type=str, default='buy', choices=['buy', 'sell'],
+                       help='Type of signal to scan for in scanning mode (buy or sell)')
+    parser.add_argument('--scan-output-dir', type=str, default='backtest_scanning_output',
+                       help='Base directory for scanning mode output')
+    
     # Output parameters
     parser.add_argument('--output-dir', type=str, default='output', help='Directory to save results')
     parser.add_argument('--list-strategies', action='store_true', help='List all available strategies and exit')
@@ -242,291 +251,421 @@ def main():
     # Initialize components
     data_handler = DataHandler()
     
-    # Create a unique directory for this backtest run
-    backtest_dir, backtest_id = create_backtest_directory()
-    print(f"Saving backtest results to: {backtest_dir}")
-    
-    # Create visualizer with custom output directory
-    visualizer = Visualizer(output_dir=backtest_dir)
-    
-    # Load strategies based on whether using separate signals
-    strategies = []
-    buy_strategies = []
-    sell_strategies = []
-    strategy_info = {'strategies': '', 'buy_strategies': '', 'sell_strategies': ''}
-    
-    if args.separate_signals:
-        if not args.buy_strategies or not args.sell_strategies:
-            print("Error: When using --separate-signals, both --buy-strategies and --sell-strategies must be provided")
-            return
-            
-        # Load buy strategies
-        buy_strategy_names = [s.strip() for s in args.buy_strategies.split(',')]
-        buy_strategies = strategy_manager.load_strategies(buy_strategy_names, params)
+    # Setup different logic for scanning mode vs regular backtest mode
+    if args.scanning_mode:
+        # Create scan output directories if they don't exist
+        scan_signal_dir = os.path.join(args.scan_output_dir, f"{args.scan_for}_signals")
+        if not os.path.exists(scan_signal_dir):
+            os.makedirs(scan_signal_dir, exist_ok=True)
+            os.makedirs(os.path.join(scan_signal_dir, "images"), exist_ok=True)
+            os.makedirs(os.path.join(scan_signal_dir, "csv"), exist_ok=True)
         
-        # Load sell strategies
-        sell_strategy_names = [s.strip() for s in args.sell_strategies.split(',')]
-        sell_strategies = strategy_manager.load_strategies(sell_strategy_names, params)
+        # Create visualizer for scanning mode
+        visualizer = Visualizer(
+            output_dir=scan_signal_dir,
+            scanning_mode=True,
+            scan_for=args.scan_for
+        )
         
-        strategy_info['buy_strategies'] = ', '.join(buy_strategy_names)
-        strategy_info['sell_strategies'] = ', '.join(sell_strategy_names)
+        print(f"Starting signal scanning mode for {args.scan_for.upper()} signals")
+        print(f"Scanning for tickers: {', '.join(tickers)}")
         
-        print(f"Starting backtest for tickers: {', '.join(tickers)}")
-        print(f"Using separate strategies:")
-        print(f"  Buy strategies: {', '.join(buy_strategy_names)}")
-        print(f"  Sell strategies: {', '.join(sell_strategy_names)}")
-    else:
-        # Use same strategies for both buy and sell
-        strategy_names = [s.strip() for s in args.strategies.split(',')]
-        strategies = strategy_manager.load_strategies(strategy_names, params)
+        # Load strategies
+        strategies = []
+        strategy_names = []
         
-        strategy_info['strategies'] = ', '.join(strategy_names)
-        
-        print(f"Starting backtest for tickers: {', '.join(tickers)}")
-        print(f"Using strategies: {', '.join(strategy_names)}")
-    
-    print(f"Signal combination method: {args.combine_method}")
-    
-    # Print stop loss details if enabled
-    if args.use_stop_loss:
-        print(f"Stop loss enabled: ATR multiplier = {args.stop_loss_atr_multiplier}, ATR period = {args.stop_loss_atr_period}")
-    
-    # Dictionary to store results for summary
-    results_summary = {}
-    
-    # Run backtest for each ticker
-    for ticker in tickers:
-        print(f"\nProcessing {ticker}...")
-        
-        # Get data
-        data = data_handler.get_stock_data(ticker, args.period, args.interval)
-        if data is None or len(data) == 0:
-            print(f"No data available for {ticker}, skipping...")
-            continue
-            
-        # Initialize backtest engine with appropriate parameters
         if args.separate_signals:
-            backtest = BacktestEngine(
-                data=data,
-                buy_strategies=buy_strategies,
-                sell_strategies=sell_strategies,
-                initial_capital=args.initial_capital,
-                commission=args.commission,
-                signal_threshold=args.signal_threshold,
-                combine_method=args.combine_method,
-                separate_signals=True,
-                use_stop_loss=args.use_stop_loss,
-                stop_loss_atr_multiplier=args.stop_loss_atr_multiplier,
-                stop_loss_atr_period=args.stop_loss_atr_period
-            )
+            # In scanning mode with separate signals, use the appropriate set of strategies
+            if args.scan_for == 'buy' and args.buy_strategies:
+                strategy_names = [s.strip() for s in args.buy_strategies.split(',')]
+                strategies = strategy_manager.load_strategies(strategy_names, params)
+                print(f"Using buy strategies: {', '.join(strategy_names)}")
+            elif args.scan_for == 'sell' and args.sell_strategies:
+                strategy_names = [s.strip() for s in args.sell_strategies.split(',')]
+                strategies = strategy_manager.load_strategies(strategy_names, params)
+                print(f"Using sell strategies: {', '.join(strategy_names)}")
+            else:
+                print(f"Error: When scanning for {args.scan_for} signals with --separate-signals, "
+                      f"you must provide --{args.scan_for}-strategies.")
+                return
         else:
-            backtest = BacktestEngine(
-                data=data,
-                strategies=strategies,
-                initial_capital=args.initial_capital,
-                commission=args.commission,
-                signal_threshold=args.signal_threshold,
-                combine_method=args.combine_method,
-                separate_signals=False,
-                use_stop_loss=args.use_stop_loss,
-                stop_loss_atr_multiplier=args.stop_loss_atr_multiplier,
-                stop_loss_atr_period=args.stop_loss_atr_period
-            )
+            # Use the same strategies for both
+            strategy_names = [s.strip() for s in args.strategies.split(',')]
+            strategies = strategy_manager.load_strategies(strategy_names, params)
+            print(f"Using strategies: {', '.join(strategy_names)}")
+            
+        print(f"Signal combination method: {args.combine_method}")
+        print(f"Signal threshold: {args.signal_threshold}")
         
-        # Run backtest
-        results = backtest.run()
+        # Run scanning for each ticker
+        for ticker in tickers:
+            print(f"\nScanning {ticker} for {args.scan_for} signals...")
+            
+            # Get data
+            data = data_handler.get_stock_data(ticker, args.period, args.interval)
+            if data is None or len(data) == 0:
+                print(f"No data available for {ticker}, skipping...")
+                continue
+            
+            # Initialize backtest engine in scanning mode
+            if args.separate_signals:
+                # Only pass the strategies for the signal type we're scanning for
+                if args.scan_for == 'buy':
+                    backtest = BacktestEngine(
+                        data=data,
+                        buy_strategies=strategies,
+                        sell_strategies=[],  # Empty list for sell strategies
+                        signal_threshold=args.signal_threshold,
+                        combine_method=args.combine_method,
+                        scanning_mode=True,
+                        scan_for=args.scan_for
+                    )
+                else:  # scan_for == 'sell'
+                    backtest = BacktestEngine(
+                        data=data,
+                        buy_strategies=[],  # Empty list for buy strategies
+                        sell_strategies=strategies,
+                        signal_threshold=args.signal_threshold,
+                        combine_method=args.combine_method,
+                        scanning_mode=True,
+                        scan_for=args.scan_for
+                    )
+            else:
+                # Use the same strategies for both (but we'll only look for one type)
+                backtest = BacktestEngine(
+                    data=data,
+                    strategies=strategies,
+                    signal_threshold=args.signal_threshold,
+                    combine_method=args.combine_method,
+                    scanning_mode=True,
+                    scan_for=args.scan_for
+                )
+            
+            # Run the scanning
+            scan_results = backtest.run()
+            
+            # Display results
+            signal_count = scan_results.get('total_signals', 0)
+            avg_strength = scan_results.get('avg_signal_strength', 0)
+            print(f"\nScanning Results for {ticker}:")
+            print(f"Total {args.scan_for.capitalize()} Signals: {signal_count}")
+            if signal_count > 0:
+                print(f"Average Signal Strength: {avg_strength:.4f}")
+                print(f"Signal Frequency: {scan_results.get('signal_frequency', 0) * 100:.2f}% of periods")
+                
+                # Print accuracy metrics if available
+                for days in [1, 5, 10, 20]:
+                    accuracy_col = f'accuracy_{days}d'
+                    if (scan_results.get('signals') is not None and 
+                        not scan_results['signals'].empty and 
+                        accuracy_col in scan_results['signals'].columns):
+                        accuracy = scan_results['signals'][accuracy_col].iloc[0]
+                        print(f"{days}-day Accuracy: {accuracy:.2f}%")
+            
+            # Visualize results
+            if signal_count > 0:
+                visualizer.plot_scanning_results(ticker, data, scan_results)
+                print(f"Scanning visualizations saved to {scan_signal_dir}")
+                
+                # Plot directly from the backtest engine for custom view
+                fig = backtest.plot_scanning_results(ticker=ticker)
+                if fig:
+                    plt.tight_layout()
+                    scan_fig_path = os.path.join(scan_signal_dir, "images", f"{ticker}_scan_detailed.png")
+                    fig.savefig(scan_fig_path, dpi=300, bbox_inches='tight')
+                    plt.close(fig)
+                    print(f"Detailed scan plot saved to {scan_fig_path}")
+            else:
+                print(f"No {args.scan_for} signals detected for {ticker}.")
+                
+            print("-" * 80)  # Separator between tickers
+    else:
+        # Regular backtest mode - existing code
+        # Create a unique directory for this backtest run
+        backtest_dir, backtest_id = create_backtest_directory()
+        print(f"Saving backtest results to: {backtest_dir}")
         
-        # Store results for summary
-        results_summary[ticker] = {
-            'final_value': results['final_value'],
-            'total_return': results['total_return'],
-            'annual_return': results['annual_return'],
-            'sharpe_ratio': results['sharpe_ratio'],
-            'max_drawdown': results['max_drawdown'],
-            'win_rate': results['win_rate'],
-            'total_trades': results['total_trades']
-        }
+        # Create visualizer with custom output directory
+        visualizer = Visualizer(output_dir=backtest_dir)
         
-        # Include stop loss metrics if available
+        # Load strategies based on whether using separate signals
+        strategies = []
+        buy_strategies = []
+        sell_strategies = []
+        strategy_info = {'strategies': '', 'buy_strategies': '', 'sell_strategies': ''}
+        
+        if args.separate_signals:
+            if not args.buy_strategies or not args.sell_strategies:
+                print("Error: When using --separate-signals, both --buy-strategies and --sell-strategies must be provided")
+                return
+                
+            # Load buy strategies
+            buy_strategy_names = [s.strip() for s in args.buy_strategies.split(',')]
+            buy_strategies = strategy_manager.load_strategies(buy_strategy_names, params)
+            
+            # Load sell strategies
+            sell_strategy_names = [s.strip() for s in args.sell_strategies.split(',')]
+            sell_strategies = strategy_manager.load_strategies(sell_strategy_names, params)
+            
+            strategy_info['buy_strategies'] = ', '.join(buy_strategy_names)
+            strategy_info['sell_strategies'] = ', '.join(sell_strategy_names)
+            
+            print(f"Starting backtest for tickers: {', '.join(tickers)}")
+            print(f"Using separate strategies:")
+            print(f"  Buy strategies: {', '.join(buy_strategy_names)}")
+            print(f"  Sell strategies: {', '.join(sell_strategy_names)}")
+        else:
+            # Use same strategies for both buy and sell
+            strategy_names = [s.strip() for s in args.strategies.split(',')]
+            strategies = strategy_manager.load_strategies(strategy_names, params)
+            
+            strategy_info['strategies'] = ', '.join(strategy_names)
+            
+            print(f"Starting backtest for tickers: {', '.join(tickers)}")
+            print(f"Using strategies: {', '.join(strategy_names)}")
+        
+        print(f"Signal combination method: {args.combine_method}")
+        
+        # Print stop loss details if enabled
         if args.use_stop_loss:
-            stop_loss_metrics = [
-                'stopped_out_count', 'stop_loss_atr_multiplier', 'stop_loss_atr_period',
-                'stopped_out_pl', 'avg_stopped_pl', 'stopped_win_rate',
-                'normal_pl', 'avg_normal_pl', 'normal_win_rate'
-            ]
-            
-            for metric in stop_loss_metrics:
-                if metric in results:
-                    results_summary[ticker][metric] = results[metric]
+            print(f"Stop loss enabled: ATR multiplier = {args.stop_loss_atr_multiplier}, ATR period = {args.stop_loss_atr_period}")
         
-        # Calculate total commission if trades were made
-        if not results['trades'].empty:
-            total_commission = results['trades']['commission'].sum()
-            results_summary[ticker]['commission_total'] = total_commission
+        # Dictionary to store results for summary
+        results_summary = {}
         
-        # Display results
-        print("\nBacktest Results:")
-        print(f"Final Portfolio Value: ${results['final_value']:.2f}")
-        print(f"Total Return: {results['total_return']:.2f}%")
-        print(f"Number of Trades: {results['total_trades']}")
-        print(f"Win Rate: {results['win_rate']:.2f}%")
-        
-        # Log results to the logbook system
-        if not args.no_logging:
-            logbook.log_backtest(
-                ticker=ticker,
-                backtest_results=results,
-                strategy_info=strategy_info,
-                args=args,
-                backtest_id=backtest_id
-            )
-            print(f"Results logged to logbook for {ticker}")
-        
-        # Visualize results to the backtest directory
-        visualizer.plot_backtest_results(ticker, data, results)
-        
-        # Save trades to CSV in the backtest directory
-        if not results['trades'].empty:
-            # Process the trades dataframe to enhance stop loss information
-            trades_df = results['trades'].copy()
+        # Run backtest for each ticker
+        for ticker in tickers:
+            print(f"\nProcessing {ticker}...")
             
-            # Add a more descriptive stop loss column
-            if 'stopped_out' in trades_df.columns:
-                # Initialize with object dtype to allow string values
-                trades_df['Stop Loss Triggered'] = pd.NA
-                # Then map the values
-                trades_df.loc[trades_df['stopped_out'] == True, 'Stop Loss Triggered'] = 'Yes'
-                trades_df.loc[trades_df['stopped_out'] == False, 'Stop Loss Triggered'] = 'No'
-                trades_df.loc[trades_df['stopped_out'].isna(), 'Stop Loss Triggered'] = 'N/A'
+            # Get data
+            data = data_handler.get_stock_data(ticker, args.period, args.interval)
+            if data is None or len(data) == 0:
+                print(f"No data available for {ticker}, skipping...")
+                continue
             
-            # Rename columns for clarity
-            trades_df = trades_df.rename(columns={
-                'date': 'Date', 
-                'action': 'Action',
-                'price': 'Price',
-                'shares': 'Shares',
-                'value': 'Value',
-                'commission': 'Commission',
-                'trade_id': 'Trade ID',
-                'stop_loss_price': 'Stop Loss Price',
-                'profit_loss': 'Profit/Loss ($)',
-                'profit_loss_pct': 'Profit/Loss (%)'
-            })
+            # Initialize backtest engine with appropriate parameters
+            if args.separate_signals:
+                backtest = BacktestEngine(
+                    data=data,
+                    buy_strategies=buy_strategies,
+                    sell_strategies=sell_strategies,
+                    initial_capital=args.initial_capital,
+                    commission=args.commission,
+                    signal_threshold=args.signal_threshold,
+                    combine_method=args.combine_method,
+                    separate_signals=True,
+                    use_stop_loss=args.use_stop_loss,
+                    stop_loss_atr_multiplier=args.stop_loss_atr_multiplier,
+                    stop_loss_atr_period=args.stop_loss_atr_period
+                )
+            else:
+                backtest = BacktestEngine(
+                    data=data,
+                    strategies=strategies,
+                    initial_capital=args.initial_capital,
+                    commission=args.commission,
+                    signal_threshold=args.signal_threshold,
+                    combine_method=args.combine_method,
+                    separate_signals=False,
+                    use_stop_loss=args.use_stop_loss,
+                    stop_loss_atr_multiplier=args.stop_loss_atr_multiplier,
+                    stop_loss_atr_period=args.stop_loss_atr_period
+                )
             
-            # Format numeric columns to be more readable
-            for col in ['Price', 'Value', 'Commission', 'Stop Loss Price']:
-                if col in trades_df.columns:
-                    trades_df[col] = trades_df[col].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "")
+            # Run backtest
+            results = backtest.run()
             
-            # Format profit/loss columns
-            if 'Profit/Loss ($)' in trades_df.columns:
-                trades_df['Profit/Loss ($)'] = trades_df['Profit/Loss ($)'].apply(
-                    lambda x: f"${x:.2f}" if pd.notnull(x) else "")
+            # Store results for summary
+            results_summary[ticker] = {
+                'final_value': results['final_value'],
+                'total_return': results['total_return'],
+                'annual_return': results['annual_return'],
+                'sharpe_ratio': results['sharpe_ratio'],
+                'max_drawdown': results['max_drawdown'],
+                'win_rate': results['win_rate'],
+                'total_trades': results['total_trades']
+            }
             
-            if 'Profit/Loss (%)' in trades_df.columns:
-                trades_df['Profit/Loss (%)'] = trades_df['Profit/Loss (%)'].apply(
-                    lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
-            
-            # Add a column to show if entry has stop loss protection
+            # Include stop loss metrics if available
             if args.use_stop_loss:
-                # Initialize with object dtype
-                trades_df['Stop Loss Status'] = pd.NA
+                stop_loss_metrics = [
+                    'stopped_out_count', 'stop_loss_atr_multiplier', 'stop_loss_atr_period',
+                    'stopped_out_pl', 'avg_stopped_pl', 'stopped_win_rate',
+                    'normal_pl', 'avg_normal_pl', 'normal_win_rate'
+                ]
                 
-                # Only process rows with valid data
-                for idx, row in trades_df.iterrows():
-                    if row['Action'] == 'BUY':
-                        if pd.notnull(row['Stop Loss Price']) and row['Stop Loss Price'] != "":
-                            # Extract numeric value from formatted string
-                            try:
-                                price = float(row['Price'].replace('$', ''))
-                                stop_price = float(row['Stop Loss Price'].replace('$', ''))
-                                pct_below = ((price - stop_price) / price * 100)
-                                trades_df.loc[idx, 'Stop Loss Status'] = f"Protected: {row['Stop Loss Price']} ({pct_below:.2f}% below entry)"
-                            except:
-                                trades_df.loc[idx, 'Stop Loss Status'] = "Protected"
-                        else:
-                            trades_df.loc[idx, 'Stop Loss Status'] = "Not Protected"
-                    else:
-                        trades_df.loc[idx, 'Stop Loss Status'] = "N/A"
+                for metric in stop_loss_metrics:
+                    if metric in results:
+                        results_summary[ticker][metric] = results[metric]
             
-            # Add a result column for sell trades to indicate if the trade was profitable
-            if 'Profit/Loss ($)' in trades_df.columns:
-                # Initialize with object dtype
-                trades_df['Result'] = pd.NA
-                
-                # Process only sell trades
-                sell_trades = trades_df['Action'] == 'SELL'
-                
-                # Only process rows with valid profit/loss values
-                for idx, row in trades_df[sell_trades].iterrows():
-                    if row['Profit/Loss ($)'] != "":
-                        try:
-                            profit = float(row['Profit/Loss ($)'].replace('$', ''))
-                            if profit > 0:
-                                trades_df.loc[idx, 'Result'] = "Profit"
-                            elif profit < 0:
-                                trades_df.loc[idx, 'Result'] = "Loss"
-                            else:
-                                trades_df.loc[idx, 'Result'] = "Breakeven"
-                        except:
-                            pass
+            # Calculate total commission if trades were made
+            if not results['trades'].empty:
+                total_commission = results['trades']['commission'].sum()
+                results_summary[ticker]['commission_total'] = total_commission
             
-            # Add a column to show if the trade was stopped out but still profitable
-            if 'Stop Loss Triggered' in trades_df.columns:
-                # Initialize with object dtype before assigning strings
-                trades_df['Profitable Stop-Out'] = pd.NA
-                
-                # Set values only for relevant rows
-                sell_and_stopped = (trades_df['Action'] == 'SELL') & (trades_df['Stop Loss Triggered'] == 'Yes')
-                
-                # Set values based on profitability for stopped out trades
-                if 'Result' in trades_df.columns:
-                    profitable_stops = sell_and_stopped & (trades_df['Result'] == 'Profit')
-                    trades_df.loc[profitable_stops, 'Profitable Stop-Out'] = "Yes (Profitable stop-out)"
-                    
-                    loss_stops = sell_and_stopped & (trades_df['Result'] == 'Loss')
-                    trades_df.loc[loss_stops, 'Profitable Stop-Out'] = "No (Loss on stop-out)"
+            # Display results
+            print("\nBacktest Results:")
+            print(f"Final Portfolio Value: ${results['final_value']:.2f}")
+            print(f"Total Return: {results['total_return']:.2f}%")
+            print(f"Number of Trades: {results['total_trades']}")
+            print(f"Win Rate: {results['win_rate']:.2f}%")
             
-            # Reorder columns for better readability
-            if args.use_stop_loss:
-                # If using stop loss, prioritize stop loss columns
-                column_order = ['Date', 'Action', 'Price', 'Shares', 'Value', 'Commission', 
-                                'Trade ID', 'Stop Loss Price', 'Stop Loss Status', 
-                                'Stop Loss Triggered', 'Entry Had Stop']
+            # Log results to the logbook system
+            if not args.no_logging:
+                logbook.log_backtest(
+                    ticker=ticker,
+                    backtest_results=results,
+                    strategy_info=strategy_info,
+                    args=args,
+                    backtest_id=backtest_id
+                )
+                print(f"Results logged to logbook for {ticker}")
+            
+            # Visualize results to the backtest directory
+            visualizer.plot_backtest_results(ticker, data, results)
+            
+            # Save trades to CSV in the backtest directory
+            if not results['trades'].empty:
+                # Process the trades dataframe to enhance stop loss information
+                trades_df = results['trades'].copy()
                 
-                # Add profit/loss columns if they exist
-                pl_columns = ['Profit/Loss ($)', 'Profit/Loss (%)', 'Result', 'Profitable Stop-Out']
-                for col in pl_columns:
+                # Add a more descriptive stop loss column
+                if 'stopped_out' in trades_df.columns:
+                    # Initialize with object dtype to allow string values
+                    trades_df['Stop Loss Triggered'] = pd.NA
+                    # Then map the values
+                    trades_df.loc[trades_df['stopped_out'] == True, 'Stop Loss Triggered'] = 'Yes'
+                    trades_df.loc[trades_df['stopped_out'] == False, 'Stop Loss Triggered'] = 'No'
+                    trades_df.loc[trades_df['stopped_out'].isna(), 'Stop Loss Triggered'] = 'N/A'
+                
+                # Rename columns for clarity
+                trades_df = trades_df.rename(columns={
+                    'date': 'Date', 
+                    'action': 'Action',
+                    'price': 'Price',
+                    'shares': 'Shares',
+                    'value': 'Value',
+                    'commission': 'Commission',
+                    'trade_id': 'Trade ID',
+                    'stop_loss_price': 'Stop Loss Price',
+                    'profit_loss': 'Profit/Loss ($)',
+                    'profit_loss_pct': 'Profit/Loss (%)'
+                })
+                
+                # Format numeric columns to be more readable
+                for col in ['Price', 'Value', 'Commission', 'Stop Loss Price']:
                     if col in trades_df.columns:
-                        column_order.append(col)
+                        trades_df[col] = trades_df[col].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else "")
                 
-                # Add any remaining columns
-                for col in trades_df.columns:
-                    if col not in column_order:
-                        column_order.append(col)
+                # Format profit/loss columns
+                if 'Profit/Loss ($)' in trades_df.columns:
+                    trades_df['Profit/Loss ($)'] = trades_df['Profit/Loss ($)'].apply(
+                        lambda x: f"${x:.2f}" if pd.notnull(x) else "")
                 
-                # Filter to only include columns that actually exist
-                column_order = [col for col in column_order if col in trades_df.columns]
-                trades_df = trades_df[column_order]
-            
-            # Save the enhanced dataframe to CSV
-            csv_path = f"{backtest_dir}/csv/{ticker}_trades.csv"
-            trades_df.to_csv(csv_path, index=False)
-            print(f"Trade details saved to {csv_path}")
-        else:
-            print("No trades were made in this backtest.")
-    
-    # Generate and save the backtest summary
-    summary_path = save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_summary)
-    print(f"\nBacktest summary saved to: {summary_path}")
-    
-    # Print information about the logbook
-    if not args.no_logging:
-        print("\nStrategy performance has been logged to the logbook system.")
-        print("You can analyze past performance using the logbook module.")
-        print(f"- Master log: logs/master_log.csv")
-        print(f"- Ticker-specific logs: logs/tickers/")
-        print(f"- Trade details: logs/trades/")
+                if 'Profit/Loss (%)' in trades_df.columns:
+                    trades_df['Profit/Loss (%)'] = trades_df['Profit/Loss (%)'].apply(
+                        lambda x: f"{x:.2f}%" if pd.notnull(x) else "")
+                
+                # Add a column to show if entry has stop loss protection
+                if args.use_stop_loss:
+                    # Initialize with object dtype
+                    trades_df['Stop Loss Status'] = pd.NA
+                    
+                    # Only process rows with valid data
+                    for idx, row in trades_df.iterrows():
+                        if row['Action'] == 'BUY':
+                            if pd.notnull(row['Stop Loss Price']) and row['Stop Loss Price'] != "":
+                                # Extract numeric value from formatted string
+                                try:
+                                    price = float(row['Price'].replace('$', ''))
+                                    stop_price = float(row['Stop Loss Price'].replace('$', ''))
+                                    pct_below = ((price - stop_price) / price * 100)
+                                    trades_df.loc[idx, 'Stop Loss Status'] = f"Protected: {row['Stop Loss Price']} ({pct_below:.2f}% below entry)"
+                                except:
+                                    trades_df.loc[idx, 'Stop Loss Status'] = "Protected"
+                            else:
+                                trades_df.loc[idx, 'Stop Loss Status'] = "Not Protected"
+                        else:
+                            trades_df.loc[idx, 'Stop Loss Status'] = "N/A"
+                
+                # Add a result column for sell trades to indicate if the trade was profitable
+                if 'Profit/Loss ($)' in trades_df.columns:
+                    # Initialize with object dtype
+                    trades_df['Result'] = pd.NA
+                    
+                    # Process only sell trades
+                    sell_trades = trades_df['Action'] == 'SELL'
+                    
+                    # Only process rows with valid profit/loss values
+                    for idx, row in trades_df[sell_trades].iterrows():
+                        if row['Profit/Loss ($)'] != "":
+                            try:
+                                profit = float(row['Profit/Loss ($)'].replace('$', ''))
+                                if profit > 0:
+                                    trades_df.loc[idx, 'Result'] = "Profit"
+                                elif profit < 0:
+                                    trades_df.loc[idx, 'Result'] = "Loss"
+                                else:
+                                    trades_df.loc[idx, 'Result'] = "Breakeven"
+                            except:
+                                pass
+                
+                # Add a column to show if the trade was stopped out but still profitable
+                if 'Stop Loss Triggered' in trades_df.columns:
+                    # Initialize with object dtype before assigning strings
+                    trades_df['Profitable Stop-Out'] = pd.NA
+                    
+                    # Set values only for relevant rows
+                    sell_and_stopped = (trades_df['Action'] == 'SELL') & (trades_df['Stop Loss Triggered'] == 'Yes')
+                    
+                    # Set values based on profitability for stopped out trades
+                    if 'Result' in trades_df.columns:
+                        profitable_stops = sell_and_stopped & (trades_df['Result'] == 'Profit')
+                        trades_df.loc[profitable_stops, 'Profitable Stop-Out'] = "Yes (Profitable stop-out)"
+                        
+                        loss_stops = sell_and_stopped & (trades_df['Result'] == 'Loss')
+                        trades_df.loc[loss_stops, 'Profitable Stop-Out'] = "No (Loss on stop-out)"
+                
+                # Reorder columns for better readability
+                if args.use_stop_loss:
+                    # If using stop loss, prioritize stop loss columns
+                    column_order = ['Date', 'Action', 'Price', 'Shares', 'Value', 'Commission', 
+                                    'Trade ID', 'Stop Loss Price', 'Stop Loss Status', 
+                                    'Stop Loss Triggered', 'Entry Had Stop']
+                    
+                    # Add profit/loss columns if they exist
+                    pl_columns = ['Profit/Loss ($)', 'Profit/Loss (%)', 'Result', 'Profitable Stop-Out']
+                    for col in pl_columns:
+                        if col in trades_df.columns:
+                            column_order.append(col)
+                    
+                    # Add any remaining columns
+                    for col in trades_df.columns:
+                        if col not in column_order:
+                            column_order.append(col)
+                    
+                    # Filter to only include columns that actually exist
+                    column_order = [col for col in column_order if col in trades_df.columns]
+                    trades_df = trades_df[column_order]
+                
+                # Save the enhanced dataframe to CSV
+                csv_path = f"{backtest_dir}/csv/{ticker}_trades.csv"
+                trades_df.to_csv(csv_path, index=False)
+                print(f"Trade details saved to {csv_path}")
+            else:
+                print("No trades were made in this backtest.")
+        
+        # Generate and save the backtest summary
+        summary_path = save_backtest_summary(backtest_dir, args, tickers, strategy_info, results_summary)
+        print(f"\nBacktest summary saved to: {summary_path}")
+        
+        # Print information about the logbook
+        if not args.no_logging:
+            print("\nStrategy performance has been logged to the logbook system.")
+            print("You can analyze past performance using the logbook module.")
+            print(f"- Master log: logs/master_log.csv")
+            print(f"- Ticker-specific logs: logs/tickers/")
+            print(f"- Trade details: logs/trades/")
     
 if __name__ == "__main__":
     main() 

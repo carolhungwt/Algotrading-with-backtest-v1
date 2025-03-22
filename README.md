@@ -140,6 +140,61 @@ python analyze_triple_ma.py --latest --plots
 python analyze_triple_ma.py --file triple_ma_debug_20230615_143022.csv
 ```
 
+## Scanning Mode
+
+The platform includes a dedicated scanning mode to identify buy or sell signals without executing trades, which is useful for testing strategies across multiple securities or time periods:
+
+```bash
+# Basic scanning for buy signals
+python main.py --tickers AAPL,MSFT,GOOG --strategies TripleMASlope --scanning-mode --scan-for buy
+
+# Scanning for sell signals with separate strategies
+python main.py --tickers AAPL,MSFT,GOOG --separate-signals --buy-strategies SimpleMovingAverageCrossover --sell-strategies RSIStrategy --scanning-mode --scan-for sell
+```
+
+### Using the Scanning Helper Script
+
+A dedicated helper script (`scan_signals.py`) is provided for easier scanning operations:
+
+```bash
+# Run a scan for buy signals
+python scan_signals.py scan --tickers AAPL,MSFT,GOOG --strategies TripleMASlope --scan-for buy
+
+# Run a scan for sell signals with custom parameters
+python scan_signals.py scan --tickers AAPL,MSFT,GOOG --strategies TripleMASlope --scan-for sell --params '{"slope_threshold": 0.05}'
+
+# Analyze existing scan results
+python scan_signals.py analyze
+
+# Analyze only buy or sell signals
+python scan_signals.py analyze --scan-for buy
+```
+
+### Scanning Features
+
+- **Signal Detection**: Identifies potential buy or sell points without executing trades
+- **Multi-Ticker Analysis**: Run scans across multiple securities to identify the best opportunities
+- **Signal Strength**: Quantifies the strength of each signal for better decision making
+- **Forward Performance**: Tests how well signals predict future price movement
+- **Visualization**: Generates charts showing signal counts, accuracy metrics, and price distributions
+- **Comparison Reports**: Creates CSV summaries and charts to compare strategies or tickers
+
+The scanning mode is particularly useful for:
+
+1. Finding the best securities to trade with a particular strategy
+2. Comparing the effectiveness of different strategies
+3. Identifying which market conditions produce the most reliable signals
+4. Fine-tuning strategy parameters based on historical signal accuracy
+
+### Scan Analysis Output
+
+The analysis generates several outputs to help evaluate signal quality:
+
+- **Signal Summary CSV**: Lists all signals with counts and accuracy metrics
+- **Signal Count Chart**: Compares signal frequencies across tickers and signal types
+- **Accuracy Comparison**: Shows how signals predict price movements across different time frames
+- **Price Distribution Charts**: Displays histograms of price changes following signals
+
 ## Example Use Cases
 
 ### 1. Simple Moving Average Crossover

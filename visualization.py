@@ -10,25 +10,39 @@ import logging
 class Visualizer:
     """Handles visualization of backtest results."""
     
-    def __init__(self, output_dir=None):
+    def __init__(self, output_dir=None, scanning_mode=False, scan_for=None):
         """
         Initialize the Visualizer.
         
         Args:
             output_dir (str, optional): Custom directory to save visualizations
+            scanning_mode (bool): Whether this is for signal scanning mode
+            scan_for (str, optional): Type of signal being scanned ('buy' or 'sell')
         """
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
         
-        # Set output directory
-        self.output_dir = output_dir or 'output'
-        self.images_dir = os.path.join(self.output_dir, 'images')
+        # Scanning mode settings
+        self.scanning_mode = scanning_mode
+        self.scan_for = scan_for.lower() if scan_for else None
         
-        # Create output directory if it doesn't exist
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-        if not os.path.exists(self.images_dir):
-            os.makedirs(self.images_dir)
+        # Set output directory based on mode
+        if scanning_mode:
+            # Use the backtest scanning output directory structure
+            base_dir = 'backtest_scanning_output'
+            scan_type_dir = f"{self.scan_for}_signals" if self.scan_for else 'signals'
+            self.output_dir = output_dir or os.path.join(base_dir, scan_type_dir)
+        else:
+            # Regular backtest mode
+            self.output_dir = output_dir or 'output'
+            
+        self.images_dir = os.path.join(self.output_dir, 'images')
+        self.csv_dir = os.path.join(self.output_dir, 'csv')
+        
+        # Create output directories if they don't exist
+        for directory in [self.output_dir, self.images_dir, self.csv_dir]:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
         
         # Set plot style
         plt.style.use('ggplot')
@@ -463,4 +477,263 @@ class Visualizer:
         # or ReportLab for PDF generation
         
         self.logger.info(f"Performance report generation not implemented yet")
-        return None 
+        return None
+    
+    def plot_scanning_results(self, ticker, data, results):
+        """
+        Create and save visualizations of signal scanning results.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            data (pandas.DataFrame): Historical price data
+            results (dict): Dictionary containing scanning results
+        """
+        self.logger.info(f"Creating signal scanning visualizations for {ticker}...")
+        
+        # Generate timestamp for filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create overview plot
+        self._plot_signal_overview(ticker, data, results, timestamp)
+        
+        # Create signal accuracy analysis
+        if 'signals' in results and not results['signals'].empty:
+            self._plot_signal_accuracy(ticker, results, timestamp)
+            
+            # Save signals data to CSV
+            self._save_signals_data(ticker, results, timestamp)
+        
+        # Save full signals data with price
+        if 'signals_data' in results and not results['signals_data'].empty:
+            self._save_full_signals_data(ticker, results, timestamp)
+    
+    def _plot_signal_overview(self, ticker, data, results, timestamp):
+        """
+        Create an overview plot of price with signals.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            data (pandas.DataFrame): Historical price data
+            results (dict): Dictionary containing scanning results
+            timestamp (str): Timestamp for filename
+        """
+        signals_data = results.get('signals_data')
+        scan_for = results.get('scan_for', 'buy')
+        signals_df = results.get('signals', pd.DataFrame())
+        
+        if signals_data is None:
+            return
+            
+        # Create figure with 2 subplots
+        fig, axes = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
+        
+        # Plot price on the top subplot
+        axes[0].plot(data.index, data['Close'], label='Close Price', alpha=0.7)
+        
+        # Add SMA
+        if len(data) > 20:
+            sma20 = data['Close'].rolling(window=20).mean()
+            axes[0].plot(data.index, sma20, label='20-day SMA', color='purple', 
+                      linestyle='--', alpha=0.6)
+            
+        # Plot signals if available
+        if not signals_df.empty:
+            signal_dates = pd.to_datetime(signals_df['date'])
+            signal_prices = signals_df['price']
+            
+            marker = '^' if scan_for == 'buy' else 'v'
+            color = 'green' if scan_for == 'buy' else 'red'
+            label = f"{scan_for.capitalize()} Signal"
+            
+            axes[0].scatter(signal_dates, signal_prices, marker=marker, color=color, 
+                         s=100, label=label)
+            
+            # Annotate signal strength for a subset of signals
+            if len(signal_dates) <= 10:
+                # If few signals, annotate all
+                for i, (date, price, strength) in enumerate(
+                    zip(signal_dates, signal_prices, signals_df['strength'])):
+                    axes[0].annotate(
+                        f"{strength:.2f}", 
+                        (date, price),
+                        xytext=(0, 10),
+                        textcoords="offset points",
+                        ha='center',
+                        fontsize=8,
+                        bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7)
+                    )
+        
+        # Bottom subplot: Signal strength or distribution
+        if 'signal' in signals_data.columns:
+            # For buy signals, focus on positive values
+            if scan_for == 'buy':
+                signal_values = signals_data['signal'].apply(lambda x: max(0, x))
+                threshold = results.get('signal_threshold', 0.2)
+            # For sell signals, focus on negative values (convert to positive for display)
+            else:
+                signal_values = signals_data['signal'].apply(lambda x: max(0, -x))
+                threshold = results.get('signal_threshold', 0.2)
+            
+            # Plot signal strength
+            axes[1].plot(data.index, signal_values, color='orange', label='Signal Strength')
+            axes[1].axhline(y=threshold, color='red', linestyle='--', 
+                         label=f'Signal Threshold ({threshold})')
+            
+            axes[1].set_title(f"{scan_for.capitalize()} Signal Strength")
+            axes[1].set_ylabel('Strength')
+            axes[1].legend()
+            axes[1].grid(True, alpha=0.3)
+        
+        # Set titles and labels
+        axes[0].set_title(f"{scan_for.capitalize()} Signal Scan - {ticker}")
+        axes[0].set_ylabel('Price')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        
+        # Format x-axis to show dates nicely
+        for ax in axes:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        
+        plt.tight_layout()
+        
+        # Save the figure
+        filename = os.path.join(self.images_dir, f'{ticker}_{scan_for}_signal_scan.png')
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        self.logger.info(f"Signal scan chart saved to {filename}")
+    
+    def _plot_signal_accuracy(self, ticker, results, timestamp):
+        """
+        Plot signal accuracy analysis.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            results (dict): Dictionary containing scanning results
+            timestamp (str): Timestamp for filename
+        """
+        signals_df = results.get('signals', pd.DataFrame())
+        scan_for = results.get('scan_for', 'buy')
+        
+        if signals_df.empty:
+            return
+            
+        # Create figure for accuracy metrics
+        plt.figure(figsize=(12, 8))
+        
+        # Bar chart for signal accuracy at different time horizons
+        accuracy_columns = [col for col in signals_df.columns if col.startswith('accuracy_')]
+        if accuracy_columns:
+            accuracies = []
+            periods = []
+            
+            for col in sorted(accuracy_columns, key=lambda x: int(x.split('_')[1][:-1])):
+                # Extract period (e.g., "accuracy_5d" -> 5)
+                period = int(col.split('_')[1][:-1])
+                periods.append(f"{period}d")
+                
+                # Get accuracy value (all rows should have the same value)
+                accuracy = signals_df[col].iloc[0]
+                accuracies.append(accuracy)
+            
+            # Plot bar chart
+            bars = plt.bar(periods, accuracies, alpha=0.7, 
+                         color='green' if scan_for == 'buy' else 'red')
+            
+            # Add value labels on top of each bar
+            for bar, accuracy in zip(bars, accuracies):
+                plt.annotate(f"{accuracy:.1f}%",
+                           xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                           xytext=(0, 3),  # 3 points vertical offset
+                           textcoords="offset points",
+                           ha='center', va='bottom')
+            
+            plt.axhline(y=50, color='black', linestyle='--', alpha=0.5, 
+                      label='Random Guess (50%)')
+            
+            title_prefix = "Buy" if scan_for == 'buy' else "Sell"
+            plt.title(f"{title_prefix} Signal Accuracy - {ticker}")
+            plt.xlabel('Time Horizon')
+            plt.ylabel('Accuracy (%)')
+            plt.ylim(0, 100)
+            plt.grid(True, axis='y')
+            plt.legend()
+            
+            # Save the figure
+            filename = os.path.join(self.images_dir, f'{ticker}_{scan_for}_signal_accuracy.png')
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            plt.close()
+            self.logger.info(f"Signal accuracy chart saved to {filename}")
+            
+        # Create figure for price change distribution
+        plt.figure(figsize=(12, 8))
+        
+        # Histogram of price changes after signals
+        price_change_columns = [col for col in signals_df.columns 
+                              if col.startswith('price_change_') and col.endswith('_pct')]
+        
+        if price_change_columns and not signals_df.empty:
+            for col in sorted(price_change_columns, 
+                            key=lambda x: int(x.split('_')[2][:-1])):
+                # Extract period (e.g., "price_change_5d_pct" -> 5)
+                period = int(col.split('_')[2][:-1])
+                
+                # Create histogram
+                plt.hist(signals_df[col], bins=20, alpha=0.5, 
+                       label=f"{period}-day Change")
+            
+            plt.axvline(x=0, color='black', linestyle='-', alpha=0.7)
+            
+            title_prefix = "After Buy" if scan_for == 'buy' else "After Sell"
+            plt.title(f"Price Change Distribution {title_prefix} Signals - {ticker}")
+            plt.xlabel('Price Change (%)')
+            plt.ylabel('Frequency')
+            plt.grid(True)
+            plt.legend()
+            
+            # Save the figure
+            filename = os.path.join(self.images_dir, 
+                                  f'{ticker}_{scan_for}_price_distribution.png')
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            plt.close()
+            self.logger.info(f"Price distribution chart saved to {filename}")
+    
+    def _save_signals_data(self, ticker, results, timestamp):
+        """
+        Save signal data to CSV.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            results (dict): Dictionary containing scanning results
+            timestamp (str): Timestamp for filename
+        """
+        signals_df = results.get('signals', pd.DataFrame())
+        scan_for = results.get('scan_for', 'buy')
+        
+        if signals_df.empty:
+            return
+            
+        # Save to CSV
+        filename = os.path.join(self.csv_dir, f'{ticker}_{scan_for}_signals.csv')
+        signals_df.to_csv(filename, index=False)
+        self.logger.info(f"Signal data saved to {filename}")
+    
+    def _save_full_signals_data(self, ticker, results, timestamp):
+        """
+        Save full price and signal data to CSV.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            results (dict): Dictionary containing scanning results
+            timestamp (str): Timestamp for filename
+        """
+        signals_data = results.get('signals_data')
+        scan_for = results.get('scan_for', 'buy')
+        
+        if signals_data is None:
+            return
+            
+        # Save to CSV
+        filename = os.path.join(self.csv_dir, f'{ticker}_{scan_for}_full_data.csv')
+        signals_data.to_csv(filename)
+        self.logger.info(f"Full signal data saved to {filename}") 

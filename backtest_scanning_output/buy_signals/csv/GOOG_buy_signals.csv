@@ -1,0 +1,2 @@
+date,price,strength,signal_type,price_change_1d,price_change_1d_pct,price_change_5d,price_change_5d_pct,price_change_10d,price_change_10d_pct,price_change_20d,price_change_20d_pct,accuracy_1d,accuracy_5d,accuracy_10d,accuracy_20d
+2024-09-06,151.58514404296875,1,buy,-2.38458251953125,-1.5730977693007353,6.4253692626953125,4.238785603471773,12.681137084960938,8.365685941734702,16.592239379882812,10.945821560970082,0.0,100.0,100.0,100.0

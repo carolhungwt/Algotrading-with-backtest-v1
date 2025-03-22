@@ -11,7 +11,8 @@ class BacktestEngine:
     def __init__(self, data, strategies=None, buy_strategies=None, sell_strategies=None, 
                  initial_capital=10000.0, commission=0.001, signal_threshold=0.2, 
                  combine_method='average', separate_signals=False,
-                 use_stop_loss=False, stop_loss_atr_multiplier=1.0, stop_loss_atr_period=14):
+                 use_stop_loss=False, stop_loss_atr_multiplier=1.0, stop_loss_atr_period=14,
+                 scanning_mode=False, scan_for='buy'):
         """
         Initialize the backtest engine.
         
@@ -28,6 +29,8 @@ class BacktestEngine:
             use_stop_loss (bool): Whether to use stop loss orders
             stop_loss_atr_multiplier (float): Multiplier for ATR to set stop loss distance
             stop_loss_atr_period (int): Period for ATR calculation
+            scanning_mode (bool): Whether to run in scanning mode (no trade execution)
+            scan_for (str): The type of signal to scan for in scanning mode ('buy' or 'sell')
         """
         self.data = data
         self.separate_signals = separate_signals
@@ -57,6 +60,12 @@ class BacktestEngine:
         self.stop_loss_atr_multiplier = stop_loss_atr_multiplier
         self.stop_loss_atr_period = stop_loss_atr_period
         
+        # Scanning mode parameters
+        self.scanning_mode = scanning_mode
+        self.scan_for = scan_for.lower()
+        if self.scan_for not in ['buy', 'sell']:
+            raise ValueError("scan_for must be either 'buy' or 'sell'")
+        
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -66,6 +75,7 @@ class BacktestEngine:
         self.positions = None
         self.trades = None
         self.performance_metrics = None
+        self.signals_data = None  # For storing signals data in scanning mode
         
         # Validate combine method
         valid_methods = ['average', 'vote', 'unanimous', 'majority', 'weighted']
@@ -80,6 +90,10 @@ class BacktestEngine:
         Returns:
             dict: Dictionary containing backtest results
         """
+        # If in scanning mode, use the scanning mode method instead
+        if self.scanning_mode:
+            return self.run_scanning_mode()
+            
         self.logger.info("Starting backtest...")
         
         # Generate trading signals
@@ -570,4 +584,231 @@ class BacktestEngine:
         for i in range(self.stop_loss_atr_period, len(tr)):
             atr.iloc[i] = (atr.iloc[i-1] * (self.stop_loss_atr_period - 1) + tr.iloc[i]) / self.stop_loss_atr_period
         
-        return atr 
+        return atr
+
+    def run_scanning_mode(self):
+        """
+        Run in scanning mode to identify buy or sell signals without executing trades.
+        This mode focuses on signal generation without portfolio tracking.
+        
+        Returns:
+            dict: Dictionary containing scanning results
+        """
+        self.logger.info(f"Starting backtest scanning mode for {self.scan_for.upper()} signals...")
+        
+        # Generate trading signals
+        raw_signals = self._generate_signals()
+        
+        # Initialize signal tracking data structures
+        signal_dates = []
+        signal_prices = []
+        signal_strengths = []  # To track the strength of each signal
+        
+        # Create a DataFrame to store all market data along with signals
+        self.signals_data = self.data.copy()
+        self.signals_data['signal'] = raw_signals
+        
+        # Iterate through the data and identify signals
+        for i in range(1, len(self.data)):
+            date = self.data.index[i]
+            current_price = self.data['Close'][i]
+            signal = raw_signals[i]
+            
+            # Track buy signals
+            if self.scan_for == 'buy' and signal > self.signal_threshold:
+                signal_dates.append(date)
+                signal_prices.append(current_price)
+                signal_strengths.append(signal)
+                self.logger.info(f"Buy signal detected at {date}: price={current_price:.2f}, strength={signal:.4f}")
+                
+            # Track sell signals
+            elif self.scan_for == 'sell' and signal < -self.signal_threshold:
+                signal_dates.append(date)
+                signal_prices.append(current_price)
+                signal_strengths.append(abs(signal))  # Store absolute value for easier comparison
+                self.logger.info(f"Sell signal detected at {date}: price={current_price:.2f}, strength={abs(signal):.4f}")
+        
+        # Create signal dataframe
+        signals_df = pd.DataFrame({
+            'date': signal_dates,
+            'price': signal_prices,
+            'strength': signal_strengths,
+            'signal_type': self.scan_for
+        })
+        
+        # Calculate scanning metrics
+        total_signals = len(signals_df)
+        signal_frequency = total_signals / len(self.data) if len(self.data) > 0 else 0
+        avg_signal_strength = signals_df['strength'].mean() if total_signals > 0 else 0
+        
+        # Calculate price changes after signals to evaluate accuracy
+        if total_signals > 0:
+            # Add columns for future price changes (N days later)
+            for days in [1, 5, 10, 20]:
+                signals_df[f'price_change_{days}d'] = 0.0
+                signals_df[f'price_change_{days}d_pct'] = 0.0
+                
+                for idx, row in signals_df.iterrows():
+                    signal_date = row['date']
+                    signal_idx = self.data.index.get_loc(signal_date)
+                    
+                    # Check if we have enough future data
+                    if signal_idx + days < len(self.data):
+                        future_price = self.data['Close'].iloc[signal_idx + days]
+                        price_change = future_price - row['price']
+                        price_change_pct = (future_price / row['price'] - 1) * 100
+                        
+                        signals_df.loc[idx, f'price_change_{days}d'] = price_change
+                        signals_df.loc[idx, f'price_change_{days}d_pct'] = price_change_pct
+            
+            # Calculate accuracy metrics based on price movement direction
+            # For buy signals, accuracy means price went up
+            # For sell signals, accuracy means price went down
+            for days in [1, 5, 10, 20]:
+                col = f'price_change_{days}d_pct'
+                if self.scan_for == 'buy':
+                    accuracy = (signals_df[col] > 0).mean() * 100
+                else:  # sell
+                    accuracy = (signals_df[col] < 0).mean() * 100
+                signals_df[f'accuracy_{days}d'] = accuracy
+                
+        # Create the results dictionary
+        results = {
+            "signals": signals_df,
+            "signals_data": self.signals_data,
+            "total_signals": total_signals,
+            "signal_frequency": signal_frequency,
+            "avg_signal_strength": avg_signal_strength,
+            "scan_for": self.scan_for
+        }
+        
+        self.logger.info(f"Scanning completed. Found {total_signals} {self.scan_for} signals.")
+        
+        # If there are signals, log additional information
+        if total_signals > 0:
+            self.logger.info(f"Average signal strength: {avg_signal_strength:.4f}")
+            for days in [1, 5, 10, 20]:
+                if f'accuracy_{days}d' in signals_df.columns:
+                    accuracy = signals_df[f'accuracy_{days}d'].iloc[0]
+                    self.logger.info(f"{days}-day accuracy: {accuracy:.2f}%")
+        
+        return results
+
+    def plot_scanning_results(self, ticker=None):
+        """
+        Plot scanning mode results, showing price chart with signals
+        and metrics for signal evaluation.
+        
+        Args:
+            ticker (str, optional): Ticker symbol for display purposes
+        """
+        if self.signals_data is None:
+            print("No scanning results to plot.")
+            return
+            
+        # Create figure with subplots
+        fig, axs = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
+        
+        # Plot price data with signals on first subplot
+        axs[0].plot(self.data.index, self.data['Close'], label='Close Price', color='blue', alpha=0.7)
+        
+        # Find indices where signals were generated
+        if self.scan_for == 'buy':
+            signal_indices = self.signals_data[self.signals_data['signal'] > self.signal_threshold].index
+            marker_color = 'green'
+            signal_label = 'Buy Signal'
+        else:  # sell signals
+            signal_indices = self.signals_data[self.signals_data['signal'] < -self.signal_threshold].index
+            marker_color = 'red'
+            signal_label = 'Sell Signal'
+        
+        # Plot signals as markers
+        if len(signal_indices) > 0:
+            axs[0].scatter(
+                signal_indices,
+                self.signals_data.loc[signal_indices, 'Close'],
+                color=marker_color,
+                marker='^' if self.scan_for == 'buy' else 'v',
+                s=100,
+                label=signal_label
+            )
+            
+            # Add signal strength annotations for a few signals
+            if len(signal_indices) <= 10:
+                # If few signals, annotate all
+                signals_to_annotate = signal_indices
+            else:
+                # If many signals, annotate a sample
+                signals_to_annotate = signal_indices[::max(1, len(signal_indices) // 10)]
+            
+            for idx in signals_to_annotate:
+                signal_val = self.signals_data.loc[idx, 'signal']
+                axs[0].annotate(
+                    f"{abs(signal_val):.2f}",
+                    (idx, self.signals_data.loc[idx, 'Close']),
+                    xytext=(0, 10),
+                    textcoords="offset points",
+                    ha='center',
+                    fontsize=8,
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7)
+                )
+                
+        # Add additional price data context
+        if 'SMA_20' not in self.data.columns and len(self.data) > 20:
+            self.signals_data['SMA_20'] = self.data['Close'].rolling(window=20).mean()
+            axs[0].plot(self.data.index, self.signals_data['SMA_20'], label='20-day SMA', 
+                      color='purple', linestyle='--', alpha=0.6)
+        elif 'SMA_20' in self.data.columns:
+            axs[0].plot(self.data.index, self.data['SMA_20'], label='20-day SMA', 
+                      color='purple', linestyle='--', alpha=0.6)
+        
+        # Label the top plot
+        title = f"{self.scan_for.capitalize()} Signal Scanning"
+        if ticker:
+            title += f" for {ticker}"
+        axs[0].set_title(title)
+        axs[0].set_ylabel('Price')
+        axs[0].grid(True, alpha=0.3)
+        axs[0].legend()
+        
+        # Second subplot: Signal strength distribution or price change after signals
+        if hasattr(self, 'signals') and len(self.signals) > 0:
+            # Plot distribution of future price changes after signals
+            for days in [5, 20]:
+                col = f'price_change_{days}d_pct'
+                if col in self.signals.columns:
+                    axs[1].hist(
+                        self.signals[col], 
+                        bins=20, 
+                        alpha=0.6, 
+                        label=f"{days}-day Change"
+                    )
+            
+            axs[1].set_title('Price Change Distribution After Signals')
+            axs[1].set_xlabel('Price Change (%)')
+            axs[1].set_ylabel('Frequency')
+            axs[1].grid(True, alpha=0.3)
+            axs[1].legend()
+        else:
+            # If we don't have detailed signal data, show signal strength over time
+            signal_column = 'signal'
+            if signal_column in self.signals_data.columns:
+                # For buy signals, positive values matter
+                if self.scan_for == 'buy':
+                    signal_values = self.signals_data[signal_column].apply(lambda x: max(0, x))
+                # For sell signals, negative values matter (convert to positive for display)
+                else:
+                    signal_values = self.signals_data[signal_column].apply(lambda x: max(0, -x))
+                
+                axs[1].plot(self.data.index, signal_values, color='orange', label='Signal Strength')
+                axs[1].axhline(y=self.signal_threshold, color='red', linestyle='--', 
+                             label=f'Signal Threshold ({self.signal_threshold})')
+                
+                axs[1].set_title(f"{self.scan_for.capitalize()} Signal Strength Over Time")
+                axs[1].set_ylabel('Signal Strength')
+                axs[1].grid(True, alpha=0.3)
+                axs[1].legend()
+                
+        # Adjust layout and show plot
+        plt.tight_layout()
+        return fig 
