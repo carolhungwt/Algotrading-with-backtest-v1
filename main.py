@@ -164,6 +164,10 @@ def main():
     parser.add_argument('--output-dir', type=str, default='output', help='Directory to save results')
     parser.add_argument('--list-strategies', action='store_true', help='List all available strategies and exit')
     
+    # Debug parameters
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode for detailed strategy visualization and logging')
+    parser.add_argument('--debug-dir', type=str, default='debug', help='Directory to save debug files (default: debug)')
+    
     # New logging specific arguments
     parser.add_argument('--no-logging', action='store_true', help='Disable logging to the logbook system')
     
@@ -195,6 +199,43 @@ def main():
             print(f"Error parsing strategy parameters: {str(e)}")
             return
     
+    # If debug mode is enabled, include debug settings in parameters
+    if args.debug:
+        # Create a deep copy of the params to avoid modifying the original
+        params_with_debug = params.copy()
+        
+        # For each strategy, add debug parameters
+        for strategy_name in [s.strip() for s in args.strategies.split(',')] if args.strategies else []:
+            if strategy_name not in params_with_debug:
+                params_with_debug[strategy_name] = {}
+            params_with_debug[strategy_name]['debug'] = True
+            params_with_debug[strategy_name]['debug_dir'] = args.debug_dir
+            
+        # Also handle separate buy/sell strategies if used
+        if args.separate_signals and args.buy_strategies and args.sell_strategies:
+            for strategy_name in [s.strip() for s in args.buy_strategies.split(',')]:
+                if strategy_name not in params_with_debug:
+                    params_with_debug[strategy_name] = {}
+                params_with_debug[strategy_name]['debug'] = True
+                params_with_debug[strategy_name]['debug_dir'] = args.debug_dir
+                
+            for strategy_name in [s.strip() for s in args.sell_strategies.split(',')]:
+                if strategy_name not in params_with_debug:
+                    params_with_debug[strategy_name] = {}
+                params_with_debug[strategy_name]['debug'] = True
+                params_with_debug[strategy_name]['debug_dir'] = args.debug_dir
+                
+        # Update the params variable
+        params = params_with_debug
+        
+        # Create debug directory if it doesn't exist
+        if not os.path.exists(args.debug_dir):
+            os.makedirs(args.debug_dir)
+            os.makedirs(f"{args.debug_dir}/images")
+            os.makedirs(f"{args.debug_dir}/csv")
+        
+        print(f"Debug mode enabled. Debug information will be saved to {args.debug_dir}")
+    
     # Parse tickers
     tickers = [ticker.strip() for ticker in args.tickers.split(',')]
     
@@ -221,11 +262,11 @@ def main():
             
         # Load buy strategies
         buy_strategy_names = [s.strip() for s in args.buy_strategies.split(',')]
-        buy_strategies = strategy_manager.load_strategies(buy_strategy_names, args.params)
+        buy_strategies = strategy_manager.load_strategies(buy_strategy_names, params)
         
         # Load sell strategies
         sell_strategy_names = [s.strip() for s in args.sell_strategies.split(',')]
-        sell_strategies = strategy_manager.load_strategies(sell_strategy_names, args.params)
+        sell_strategies = strategy_manager.load_strategies(sell_strategy_names, params)
         
         strategy_info['buy_strategies'] = ', '.join(buy_strategy_names)
         strategy_info['sell_strategies'] = ', '.join(sell_strategy_names)
@@ -237,7 +278,7 @@ def main():
     else:
         # Use same strategies for both buy and sell
         strategy_names = [s.strip() for s in args.strategies.split(',')]
-        strategies = strategy_manager.load_strategies(strategy_names, args.params)
+        strategies = strategy_manager.load_strategies(strategy_names, params)
         
         strategy_info['strategies'] = ', '.join(strategy_names)
         

@@ -129,7 +129,11 @@ class StrategyManager:
         
         # Parse parameters if provided
         params = {}
-        if params_json and params_json.strip():
+        
+        if isinstance(params_json, dict):
+            # Already a dictionary, use it directly
+            params = params_json
+        elif params_json and params_json.strip():
             try:
                 params = json.loads(params_json)
             except json.JSONDecodeError as e:

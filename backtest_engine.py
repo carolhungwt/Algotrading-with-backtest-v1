@@ -125,10 +125,11 @@ class BacktestEngine:
             if not hit_stop_loss:
                 signal = signals[i]
                 
-                # Execute buy signal
+                # Execute buy signal - only when we have no position
                 if signal > self.signal_threshold and self.position == 0:
-                    # Calculate shares to buy
-                    shares_to_buy = int(self.cash / current_price)
+                    # Calculate shares to buy using all available cash, accounting for commission
+                    # Formula: shares = cash / (price * (1 + commission))
+                    shares_to_buy = int(self.cash / (current_price * (1 + self.commission)))
                     
                     if shares_to_buy > 0:
                         # Calculate stop loss if applicable
@@ -145,8 +146,9 @@ class BacktestEngine:
                         self.position = shares_to_buy
                         current_position_entry_price = current_price
                 
-                # Execute sell signal
+                # Execute sell signal - only when we have a position
                 elif signal < -self.signal_threshold and self.position > 0:
+                    # Sell all shares we currently hold
                     self._execute_trade(date, 'SELL', current_price, self.position)
                     self.position = 0
                     current_stop_loss_price = 0  # Reset stop loss

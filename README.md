@@ -98,6 +98,7 @@ The stop loss is placed at `entry_price - (ATR × multiplier)` for long position
 - `MACDStrategy`: Buy/sell based on MACD line crossing signal line
 - `BollingerBandsStrategy`: Buy when price crosses below lower band, sell when it crosses above upper band
 - `CompositeStrategy`: Combine multiple strategies with custom weightings
+- `TripleMASlope`: Buy/sell based on triple moving average crossovers with slope confirmation to identify trending markets
 
 To list all available strategies:
 ```bash
@@ -110,6 +111,33 @@ You can customize strategy parameters using JSON format:
 
 ```bash
 python main.py --tickers AAPL --strategies SimpleMovingAverageCrossover --params '{"short_window": 20, "long_window": 50}'
+```
+
+## Debug Mode
+
+The platform includes a debugging system to help analyze strategy performance in detail:
+
+```bash
+# Enable debug mode for any strategy
+python main.py --tickers AAPL --strategies TripleMASlope --debug
+
+# Specify a custom directory for debug files
+python main.py --tickers AAPL --strategies TripleMASlope --debug --debug-dir my_debug_folder
+```
+
+### Debug Features
+
+- **Detailed Logging**: Captures signal generation details, slope values, and market conditions
+- **Visualization**: Generates charts showing moving averages, slopes, and signal points
+- **Trade Analysis**: Saves CSV files with detailed information about each trade
+- **Analysis Tools**: Use the included analysis script to evaluate debug data:
+
+```bash
+# Analyze the latest debug run with plots
+python analyze_triple_ma.py --latest --plots
+
+# Analyze a specific debug file
+python analyze_triple_ma.py --file triple_ma_debug_20230615_143022.csv
 ```
 
 ## Example Use Cases
@@ -137,6 +165,32 @@ python main.py --tickers TSLA --separate-signals --buy-strategies BollingerBands
 ```bash
 python main.py --tickers AAPL,MSFT,GOOG --strategies MACDStrategy
 ```
+
+### 5. Triple Moving Average with Slope Confirmation
+
+```bash
+# Run with default parameters (6, 10, 20 periods)
+python main.py --tickers AAPL --strategies TripleMASlope
+
+# With custom parameters
+python main.py --tickers AAPL --strategies TripleMASlope --params '{"TripleMASlope": {"fast_window": 5, "mid_window": 8, "slow_window": 15, "slope_threshold": 0.05, "slope_period": 3}}'
+
+# With debug mode enabled
+python main.py --tickers AAPL --strategies TripleMASlope --debug
+```
+
+The Triple MA Slope strategy uses three moving averages with slope confirmation to identify trending markets:
+
+- **Buy Signal**: Mid MA (10) crosses above Slow MA (20) with positive slope, and market is not in an equivocal state
+- **Sell Signal**: Fast MA (6) crosses below Mid MA (10) with negative slope, and market is not in an equivocal state
+
+Parameters:
+- `fast_window`: Period for fast moving average (default: 6)
+- `mid_window`: Period for middle moving average (default: 10)
+- `slow_window`: Period for slow moving average (default: 20)
+- `slope_period`: Periods used to calculate slope (default: 3)
+- `slope_threshold`: Threshold for determining significant slope (default: 0.01)
+- `equivocal_threshold`: Threshold for determining sideways markets (default: 0.002)
 
 ## Backtest Results
 
